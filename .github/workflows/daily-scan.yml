@@ -30,4 +30,4 @@ jobs:
 
       - name: Run scanner
         run: |
-          python -u main.py
+          python -u pokemon_price_tracker/main.py
