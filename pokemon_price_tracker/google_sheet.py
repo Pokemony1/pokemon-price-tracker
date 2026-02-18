@@ -5,6 +5,10 @@ from oauth2client.service_account import ServiceAccountCredentials
 
 
 def connect_google_sheet():
+    """
+    Returnerer hele Spreadsheet-objektet (ikke kun Sheet1),
+    så vi kan bruge både Sheet1 (Summary) og RawOffers.
+    """
     scope = [
         "https://spreadsheets.google.com/feeds",
         "https://www.googleapis.com/auth/spreadsheets",
@@ -24,4 +28,4 @@ def connect_google_sheet():
     client = gspread.authorize(creds)
 
     sh = client.open_by_key(sheet_id)
-    return sh.sheet1
+    return sh

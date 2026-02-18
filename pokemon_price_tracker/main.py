@@ -5,9 +5,18 @@ import importlib
 import pkgutil
 import gspread
 
-
 from pokemon_price_tracker.google_sheet import connect_google_sheet
 from pokemon_price_tracker.push_notification import send_push
+
+
+# ---------- KONFIG ----------
+RAW_SHEET_TITLE = "RawOffers"   # fanen med alle fund pr. shop pr. dag
+SUMMARY_SHEET_TITLE = "Sheet1"  # fanen med billigste pr. dag + median
+
+# Tilbudslogik (valgfrit)
+MIN_HISTORY_FOR_PUSH = 5        # kræv mindst 5 historiske datapunkter før push
+DISCOUNT_PCT = 0.15             # 15% under median => push
+# ---------------------------
 
 
 def load_shops():
@@ -27,15 +36,16 @@ def load_shops():
     return shops
 
 
-def ensure_headers(ws, today_str):
+def ensure_summary_headers(ws, today_str):
     """
-    Sikrer headers:
+    Summary headers:
       A1 = Product
       B1 = Median
-      og for dagens dato 2 kolonner:
+      For dagens dato 3 kolonner:
         "<date> Price"
         "<date> Shop"
-    Returnerer (today_price_col, today_shop_col)
+        "<date> Stock"
+    Returnerer (today_price_col, today_shop_col, today_stock_col)
     """
     header = ws.row_values(1)
 
@@ -49,24 +59,32 @@ def ensure_headers(ws, today_str):
 
     price_header = f"{today_str} Price"
     shop_header = f"{today_str} Shop"
+    stock_header = f"{today_str} Stock"
 
-    # Find eksisterende pris-kolonne for i dag
+    # Hvis dagens price header allerede findes
     if price_header in header:
         price_col = header.index(price_header) + 1
         shop_col = price_col + 1
+        stock_col = price_col + 2
 
-        # Hvis shop-header ikke matcher / mangler, fix den
+        # Fix hvis shop/stock headers mangler
         if len(header) < shop_col or header[shop_col - 1] != shop_header:
             ws.update_cell(1, shop_col, shop_header)
+        if len(header) < stock_col or header[stock_col - 1] != stock_header:
+            ws.update_cell(1, stock_col, stock_header)
 
-        return price_col, shop_col
+        return price_col, shop_col, stock_col
 
-    # Ellers tilføj 2 nye kolonner i slutningen
+    # Ellers tilføj 3 nye kolonner i slutningen
     price_col = len(header) + 1
     shop_col = price_col + 1
+    stock_col = price_col + 2
+
     ws.update_cell(1, price_col, price_header)
     ws.update_cell(1, shop_col, shop_header)
-    return price_col, shop_col
+    ws.update_cell(1, stock_col, stock_header)
+
+    return price_col, shop_col, stock_col
 
 
 def get_product_row_map(ws):
@@ -88,36 +106,64 @@ def parse_float(x):
         return None
 
 
-def main():
-    # --------- HARD TEST / DEBUG (så du ALTID kan se output) ----------
-    print("STARTER SCRIPT")
-    sheet_name = os.getenv("SHEET_NAME", "PokemonPrices")
-    print("SHEET_NAME =", sheet_name)
+def ensure_raw_headers(raw_ws):
+    wanted = ["Timestamp", "Date", "Product", "Price", "Shop", "Available"]
+    header = raw_ws.row_values(1)
+    if header != wanted:
+        raw_ws.update("A1:F1", [wanted])
 
-    # Push env (må gerne være tom under test)
+
+def append_raw_offers(raw_ws, today_str, offers_by_product):
+    """
+    offers_by_product: dict[name] -> list of (price, shop_label, available)
+    Skriver ALLE fund (ikke kun billigste) i RawOffers med append_rows (1 API-call).
+    """
+    now_ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    rows = []
+    for name, offers in offers_by_product.items():
+        for price, shop, available in offers:
+            rows.append([now_ts, today_str, name, str(price), shop, "TRUE" if available else "FALSE"])
+
+    if rows:
+        raw_ws.append_rows(rows, value_input_option="USER_ENTERED")
+
+
+def main():
+    print("STARTER SCRIPT")
+
+    # GitHub Secrets / env
     push_user_key = os.getenv("PUSH_USER_KEY", "")
     push_app_token = os.getenv("PUSH_APP_TOKEN", "")
 
-    # Connect
-    ws = connect_google_sheet()
+    # Dato
+    today_str = datetime.datetime.now().strftime("%d-%m-%Y")
+
+    # Connect til spreadsheet
+    sh = connect_google_sheet()
     print("CONNECTED TO GOOGLE SHEET OK")
 
-    # Skriv tydeligt bevis i arket
-    ws.update_cell(1, 1, "HELLO_FROM_GITHUB_ACTIONS")
-    ws.update_cell(1, 2, datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-    print("SKREV HELLO + TIMESTAMP I A1/B1 OK")
-    # ---------------------------------------------------------------
+    # Åbn faner
+    summary_ws = sh.worksheet(SUMMARY_SHEET_TITLE)
+    try:
+        raw_ws = sh.worksheet(RAW_SHEET_TITLE)
+    except Exception:
+        # Hvis den ikke findes, opret den
+        raw_ws = sh.add_worksheet(title=RAW_SHEET_TITLE, rows=5000, cols=10)
 
-    # Dagens dato-kolonner
-    today_str = datetime.datetime.now().strftime("%d-%m-%Y")
-    today_price_col, today_shop_col = ensure_headers(ws, today_str)
-    print("HEADERS OK:", today_price_col, today_shop_col)
+    # (Valgfrit) debug-bevis i arket - slå fra ved at sætte env DEBUG_HELLO=0
+    if os.getenv("DEBUG_HELLO", "1") == "1":
+        summary_ws.update_cell(1, 1, "Product")  # sørg for ikke at ødelægge header
+        # vi skriver ikke HELLO længere, så du ikke mister rigtige headers
+
+    # Summary headers for i dag
+    today_price_col, today_shop_col, today_stock_col = ensure_summary_headers(summary_ws, today_str)
+    print("SUMMARY HEADERS OK:", today_price_col, today_shop_col, today_stock_col)
 
     # Load shops
     shops = load_shops()
     print("Shops loaded:", [s[0] for s in shops])
 
-    # Saml alle tilbud fra shops
+    # Saml alle offers fra shops:
     # all_offers[name] = list of (price, shop_label, available)
     all_offers = {}
 
@@ -133,86 +179,79 @@ def main():
             name = (p.get("name") or "").strip()
             if not name:
                 continue
+
             price = parse_float(p.get("price"))
             if price is None:
                 continue
-            available = bool(p.get("available", True))
 
+            available = bool(p.get("available", True))
             all_offers.setdefault(name, []).append((price, shop_label, available))
 
     print("TOTAL unikke produkter fundet:", len(all_offers))
+
+    # ---- RAW OFFERS: skriv alt (inkl. lagerstatus) ----
+    ensure_raw_headers(raw_ws)
+    append_raw_offers(raw_ws, today_str, all_offers)
+    print("RAW OFFERS appended")
 
     # Vælg billigste pr. produkt (prioritér available=True)
     cheapest_today = {}
     for name, offers in all_offers.items():
         avail_offers = [o for o in offers if o[2] is True]
         use = avail_offers if avail_offers else offers
-        cheapest = min(use, key=lambda t: t[0])
-        cheapest_today[name] = cheapest  # (price, shop, available)
+        cheapest = min(use, key=lambda t: t[0])  # (price, shop_label, available)
+        cheapest_today[name] = cheapest
 
-    # Find eksisterende rækker i sheet
-    row_map = get_product_row_map(ws)
+    # Find eksisterende rækker i summary
+    row_map = get_product_row_map(summary_ws)
 
-    # Tilføj nye produkter i bunden
-    if cheapest_today:
-        last_row = len(ws.col_values(1)) + 1
-        new_rows = []
-        for name in cheapest_today.keys():
-            if name not in row_map:
-                new_rows.append([name])
-        if new_rows:
-            ws.update(f"A{last_row}:A{last_row + len(new_rows) - 1}", new_rows)
-            row_map = get_product_row_map(ws)
-            print("Tilføjede nye produkter:", len(new_rows))
+    # Tilføj nye produkter i bunden (append_rows = færre writes)
+    new_names = [name for name in cheapest_today.keys() if name not in row_map]
+    if new_names:
+        summary_ws.append_rows([[n] for n in new_names], value_input_option="USER_ENTERED")
+        row_map = get_product_row_map(summary_ws)
+        print("Tilføjede nye produkter:", len(new_names))
 
-    # Find alle pris-kolonner (col 3,5,7,... som ender med " Price")
-    header = ws.row_values(1)
-    price_cols = []
-    for c in range(3, len(header) + 1, 2):
-        if header[c - 1].endswith(" Price"):
-            price_cols.append(c)
+    # Batch: hent hele arket som matrix, opdater lokalt, skriv tilbage i ét kald
+    all_values = summary_ws.get_all_values()
 
-        # 9) Opdater dagens data + beregn median + push ved tilbud (BATCH)
-    push_messages = []
-    updates_count = 0
-
-    # For at undgå 429-quota: byg én stor "values" matrix og skriv med ws.update()
     max_row = max(row_map.values()) if row_map else 1
-    max_col = max(today_shop_col, 2)  # vi skriver mindst til kolonne 2 (Median)
+    max_col = max(today_stock_col, 2)
 
-    # Hent hele området A1..(max_row,max_col) én gang
-    # (det er hurtigere og giver os historik uden mange API-kald)
-    all_values = ws.get_all_values()
-    # Sørg for at all_values har nok rækker/kolonner
+    # Sørg for nok rækker/kolonner i matrixen
     while len(all_values) < max_row:
         all_values.append([])
     for r_i in range(len(all_values)):
-        row = all_values[r_i]
-        if len(row) < max_col:
-            row.extend([""] * (max_col - len(row)))
+        if len(all_values[r_i]) < max_col:
+            all_values[r_i].extend([""] * (max_col - len(all_values[r_i])))
 
-    # Pris-kolonner til median (col 3,5,7,...) som ender med " Price"
     header = all_values[0] if all_values else []
+
+    # Price-kolonner ligger nu i mønster: col 3,6,9,... (step 3)
     price_cols = []
-    for c in range(3, len(header) + 1, 2):
+    for c in range(3, len(header) + 1, 3):
         if header[c - 1].endswith(" Price"):
             price_cols.append(c)
 
-    for name, (price, shop_label, _available) in cheapest_today.items():
+    push_messages = []
+    updates_count = 0
+
+    for name, (price, shop_label, available) in cheapest_today.items():
         r = row_map.get(name)
         if not r:
             continue
 
-        # Skriv dagens pris + shop i vores lokale matrix
+        # Skriv dagens data (billigste)
         all_values[r - 1][today_price_col - 1] = str(price)
         all_values[r - 1][today_shop_col - 1] = str(shop_label)
+        all_values[r - 1][today_stock_col - 1] = "IN_STOCK" if available else "OUT_OF_STOCK"
 
-        # Historiske priser (fra matrix) -> median
+        # Historiske priser (uden dagens)
         hist_prices = []
         for c in price_cols:
             if c == today_price_col:
                 continue
-            v = all_values[r - 1][c - 1] if c - 1 < len(all_values[r - 1]) else ""
+            v = all_values[r - 1][c - 1] if (c - 1) < len(all_values[r - 1]) else ""
             try:
                 fv = float(v) if v != "" else None
             except Exception:
@@ -225,15 +264,31 @@ def main():
 
         # Skriv median i kolonne B
         all_values[r - 1][1] = f"{median_price:.6g}"
-
         updates_count += 1
 
-        # Push hvis dagens pris < median
-        if float(price) < median_price:
-            push_messages.append(
-                f"Tilbud: {name} → {price} kr ({shop_label}) | median: {median_price:.2f}"
-            )
+        # Push-logik: kræv historik + procent under median
+        if len(hist_prices) >= MIN_HISTORY_FOR_PUSH:
+            threshold = median_price * (1 - DISCOUNT_PCT)
+            if float(price) <= threshold:
+                push_messages.append(
+                    f"Tilbud ({DISCOUNT_PCT*100:.0f}%): {name} → {price} kr ({shop_label}) | median: {median_price:.0f}"
+                )
 
-    # Skriv hele området tilbage i ÉT kald (A1..)
-    # NB: gspread update() forventer values først i nyere versioner
-    ws.update(values=all_values[:max_row], range_name=f"A1:{gspread.utils.rowcol_to_a1(max_row, max_col)}")
+    # Skriv hele området tilbage i ÉT kald
+    range_name = f"A1:{gspread.utils.rowcol_to_a1(max_row, max_col)}"
+    summary_ws.update(values=all_values[:max_row], range_name=range_name)
+    print(f"SUMMARY updated rows: {updates_count} | range: {range_name}")
+
+    # Send push (samlet)
+    if push_messages:
+        msg = "\n".join(push_messages[:20])  # max 20 linjer, så beskeden ikke bliver for lang
+        if len(push_messages) > 20:
+            msg += f"\n(+{len(push_messages) - 20} flere tilbud)"
+        send_push(msg, push_user_key, push_app_token)
+        print("PUSH SENT:", len(push_messages))
+    else:
+        print("NO PUSH OFFERS")
+
+
+if __name__ == "__main__":
+    main()
