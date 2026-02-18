@@ -13,4 +13,9 @@
 
       - name: Run scanner
         run: |
+<<<<<<< HEAD
           python -u -c "from pokemon_price_tracker import main; print('IMPORT OK'); main.main(); print('DONE')"
+=======
+          python -u -c "from pokemon_price_tracker import main; print('IMPORT OK'); main.main(); print('DONE')"
+
+>>>>>>> 9907d25d50e0f78700b253731c6457c1d5df33f1
