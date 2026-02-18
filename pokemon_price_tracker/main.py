@@ -3,6 +3,8 @@ import datetime
 import numpy as np
 import importlib
 import pkgutil
+import gspread
+
 
 from pokemon_price_tracker.google_sheet import connect_google_sheet
 from pokemon_price_tracker.push_notification import send_push
@@ -170,51 +172,68 @@ def main():
         if header[c - 1].endswith(" Price"):
             price_cols.append(c)
 
-    # Opdater dagens data + beregn median + push ved tilbud
+        # 9) Opdater dagens data + beregn median + push ved tilbud (BATCH)
     push_messages = []
     updates_count = 0
+
+    # For at undgå 429-quota: byg én stor "values" matrix og skriv med ws.update()
+    max_row = max(row_map.values()) if row_map else 1
+    max_col = max(today_shop_col, 2)  # vi skriver mindst til kolonne 2 (Median)
+
+    # Hent hele området A1..(max_row,max_col) én gang
+    # (det er hurtigere og giver os historik uden mange API-kald)
+    all_values = ws.get_all_values()
+    # Sørg for at all_values har nok rækker/kolonner
+    while len(all_values) < max_row:
+        all_values.append([])
+    for r_i in range(len(all_values)):
+        row = all_values[r_i]
+        if len(row) < max_col:
+            row.extend([""] * (max_col - len(row)))
+
+    # Pris-kolonner til median (col 3,5,7,...) som ender med " Price"
+    header = all_values[0] if all_values else []
+    price_cols = []
+    for c in range(3, len(header) + 1, 2):
+        if header[c - 1].endswith(" Price"):
+            price_cols.append(c)
 
     for name, (price, shop_label, _available) in cheapest_today.items():
         r = row_map.get(name)
         if not r:
             continue
 
-        # Skriv dagens pris og shop
-        ws.update_cell(r, today_price_col, price)
-        ws.update_cell(r, today_shop_col, shop_label)
-        updates_count += 1
+        # Skriv dagens pris + shop i vores lokale matrix
+        all_values[r - 1][today_price_col - 1] = str(price)
+        all_values[r - 1][today_shop_col - 1] = str(shop_label)
 
-        # Hent historiske priser fra tidligere kolonner
-        row_values = ws.row_values(r)
+        # Historiske priser (fra matrix) -> median
         hist_prices = []
         for c in price_cols:
             if c == today_price_col:
                 continue
-            if c - 1 < len(row_values):
-                v = parse_float(row_values[c - 1])
-                if v is not None:
-                    hist_prices.append(v)
+            v = all_values[r - 1][c - 1] if c - 1 < len(all_values[r - 1]) else ""
+            try:
+                fv = float(v) if v != "" else None
+            except Exception:
+                fv = None
+            if fv is not None:
+                hist_prices.append(fv)
 
-        prices_for_median = hist_prices + [price]
-        median_price = float(np.median(prices_for_median)) if prices_for_median else price
+        prices_for_median = hist_prices + [float(price)]
+        median_price = float(np.median(prices_for_median)) if prices_for_median else float(price)
 
         # Skriv median i kolonne B
-        ws.update_cell(r, 2, median_price)
+        all_values[r - 1][1] = f"{median_price:.6g}"
+
+        updates_count += 1
 
         # Push hvis dagens pris < median
-        if price < median_price:
+        if float(price) < median_price:
             push_messages.append(
                 f"Tilbud: {name} → {price} kr ({shop_label}) | median: {median_price:.2f}"
             )
 
-    # Send push beskeder
-    for msg in push_messages:
-        send_push(msg, push_user_key, push_app_token)
-
-    print("Scan færdig. Produkter opdateret:", updates_count)
-    print("Push sendt:", len(push_messages))
-
-
-# ✅ VIGTIGT: uden denne kører filen, men main() bliver aldrig kaldt
-if __name__ == "__main__":
-    main()
+    # Skriv hele området tilbage i ÉT kald (A1..)
+    # NB: gspread update() forventer values først i nyere versioner
+    ws.update(values=all_values[:max_row], range_name=f"A1:{gspread.utils.rowcol_to_a1(max_row, max_col)}")
