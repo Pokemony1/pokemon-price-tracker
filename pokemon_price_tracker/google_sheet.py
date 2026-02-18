@@ -4,11 +4,7 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
 
-def connect_google_sheet(sheet_name: str):
-    """
-    Connect to Google Sheets using JSON credentials stored in env var:
-    GOOGLE_SERVICE_ACCOUNT_JSON
-    """
+def connect_google_sheet():
     scope = [
         "https://spreadsheets.google.com/feeds",
         "https://www.googleapis.com/auth/spreadsheets",
@@ -18,13 +14,14 @@ def connect_google_sheet(sheet_name: str):
 
     sa_json = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
     if not sa_json:
-        raise RuntimeError("Mangler GOOGLE_SERVICE_ACCOUNT_JSON i GitHub Secrets (Actions).")
+        raise RuntimeError("Mangler GOOGLE_SERVICE_ACCOUNT_JSON i GitHub Secrets")
 
-    sa_info = json.loads(sa_json)
-    creds = ServiceAccountCredentials.from_json_keyfile_dict(sa_info, scope)
+    sheet_id = os.getenv("SHEET_ID")
+    if not sheet_id:
+        raise RuntimeError("Mangler SHEET_ID i GitHub Secrets")
+
+    creds = ServiceAccountCredentials.from_json_keyfile_dict(json.loads(sa_json), scope)
     client = gspread.authorize(creds)
 
-    # Åbn eksisterende sheet (du opretter det manuelt)
-    sh = client.open(sheet_name)
-    ws = sh.sheet1
-    return ws
+    sh = client.open_by_key(sheet_id)
+    return sh.sheet1

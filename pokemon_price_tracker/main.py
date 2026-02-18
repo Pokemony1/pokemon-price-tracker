@@ -97,7 +97,7 @@ def main():
     push_app_token = os.getenv("PUSH_APP_TOKEN", "")
 
     # Connect
-    ws = connect_google_sheet(sheet_name)
+    ws = connect_google_sheet()
     print("CONNECTED TO GOOGLE SHEET OK")
 
     # Skriv tydeligt bevis i arket
