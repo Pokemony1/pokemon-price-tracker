@@ -9,14 +9,17 @@ from pokemon_price_tracker.google_sheet import connect_google_sheet
 from pokemon_price_tracker.push_notification import send_push
 
 
-# ---------- KONFIG ----------
-RAW_SHEET_TITLE = "RawOffers"   # fanen med alle fund pr. shop pr. dag
-SUMMARY_SHEET_TITLE = "Sheet1"  # fanen med billigste pr. dag + median
+# ----------------- KONFIG -----------------
+SUMMARY_SHEET_TITLE = "Sheet1"
+RAW_SHEET_TITLE = "RawOffers"
 
-# Tilbudslogik (valgfrit)
-MIN_HISTORY_FOR_PUSH = 5        # kræv mindst 5 historiske datapunkter før push
-DISCOUNT_PCT = 0.15             # 15% under median => push
-# ---------------------------
+# Push-tilbud logik (valgfrit)
+MIN_HISTORY_FOR_PUSH = 5     # kræv mindst 5 historiske datapunkter før push
+DISCOUNT_PCT = 0.15          # 15% under median => push
+
+# Begræns push-linjer så beskeden ikke bliver for lang
+MAX_PUSH_LINES = 20
+# ------------------------------------------
 
 
 def load_shops():
@@ -38,10 +41,10 @@ def load_shops():
 
 def ensure_summary_headers(ws, today_str):
     """
-    Summary headers:
+    Sikrer headers:
       A1 = Product
       B1 = Median
-      For dagens dato 3 kolonner:
+      og for dagens dato 3 kolonner:
         "<date> Price"
         "<date> Shop"
         "<date> Stock"
@@ -61,13 +64,13 @@ def ensure_summary_headers(ws, today_str):
     shop_header = f"{today_str} Shop"
     stock_header = f"{today_str} Stock"
 
-    # Hvis dagens price header allerede findes
+    # Find eksisterende pris-kolonne for i dag
     if price_header in header:
         price_col = header.index(price_header) + 1
         shop_col = price_col + 1
         stock_col = price_col + 2
 
-        # Fix hvis shop/stock headers mangler
+        # Fix headers hvis de mangler
         if len(header) < shop_col or header[shop_col - 1] != shop_header:
             ws.update_cell(1, shop_col, shop_header)
         if len(header) < stock_col or header[stock_col - 1] != stock_header:
@@ -85,25 +88,6 @@ def ensure_summary_headers(ws, today_str):
     ws.update_cell(1, stock_col, stock_header)
 
     return price_col, shop_col, stock_col
-
-
-def get_product_row_map(ws):
-    """
-    Læser kolonne A og returnerer dict: product_name -> row_index
-    """
-    col = ws.col_values(1)
-    mapping = {}
-    for idx, name in enumerate(col[1:], start=2):  # skip header
-        if name:
-            mapping[name] = idx
-    return mapping
-
-
-def parse_float(x):
-    try:
-        return float(x)
-    except Exception:
-        return None
 
 
 def ensure_raw_headers(raw_ws):
@@ -128,60 +112,86 @@ def append_raw_offers(raw_ws, today_str, offers_by_product):
         raw_ws.append_rows(rows, value_input_option="USER_ENTERED")
 
 
+def get_product_row_map(ws):
+    """
+    Læser kolonne A og returnerer dict: product_name -> row_index
+    """
+    col = ws.col_values(1)
+    mapping = {}
+    for idx, name in enumerate(col[1:], start=2):  # skip header
+        if name:
+            mapping[name] = idx
+    return mapping
+
+
+def parse_float(x):
+    try:
+        return float(x)
+    except Exception:
+        return None
+
+
 def main():
     print("STARTER SCRIPT")
 
-    # GitHub Secrets / env
+    # Push env
     push_user_key = os.getenv("PUSH_USER_KEY", "")
     push_app_token = os.getenv("PUSH_APP_TOKEN", "")
 
     # Dato
     today_str = datetime.datetime.now().strftime("%d-%m-%Y")
 
-    # Connect til spreadsheet
+    # Connect til Google Sheet (Spreadsheet)
     sh = connect_google_sheet()
     print("CONNECTED TO GOOGLE SHEET OK")
 
     # Åbn faner
-    summary_ws = sh.worksheet(SUMMARY_SHEET_TITLE)
+    try:
+        summary_ws = sh.worksheet(SUMMARY_SHEET_TITLE)
+    except Exception:
+        # fallback: første ark
+        summary_ws = sh.sheet1
+
     try:
         raw_ws = sh.worksheet(RAW_SHEET_TITLE)
     except Exception:
-        # Hvis den ikke findes, opret den
         raw_ws = sh.add_worksheet(title=RAW_SHEET_TITLE, rows=5000, cols=10)
 
-    # (Valgfrit) debug-bevis i arket - slå fra ved at sætte env DEBUG_HELLO=0
-    if os.getenv("DEBUG_HELLO", "1") == "1":
-        summary_ws.update_cell(1, 1, "Product")  # sørg for ikke at ødelægge header
-        # vi skriver ikke HELLO længere, så du ikke mister rigtige headers
-
-    # Summary headers for i dag
+    # Headers i summary for i dag
     today_price_col, today_shop_col, today_stock_col = ensure_summary_headers(summary_ws, today_str)
     print("SUMMARY HEADERS OK:", today_price_col, today_shop_col, today_stock_col)
 
-    # Load shops
+    # Load shops (nu vil den typisk kun finde "A-list" fra Alisten.py)
     shops = load_shops()
     print("Shops loaded:", [s[0] for s in shops])
 
-    # Saml alle offers fra shops:
     # all_offers[name] = list of (price, shop_label, available)
     all_offers = {}
 
-    for p in products:
-    name = (p.get("name") or "").strip()
-    if not name:
-        continue
+    for shop_label, shop_module in shops:
+        try:
+            products = shop_module.get_products()
+            print(f"{shop_label}: hentede {len(products)} produkter")
+        except Exception as e:
+            print(f"Fejl i shop {shop_label}: {e}")
+            continue
 
-    price = parse_float(p.get("price"))
-    if price is None:
-        continue
+        for p in products:
+            name = (p.get("name") or "").strip()
+            if not name:
+                continue
 
-    available = bool(p.get("available", True))
+            price = parse_float(p.get("price"))
+            if price is None:
+                continue
 
-    # ✅ NYT: hvis produktet kommer fra Alisten.py, brug shop_source
-    real_shop = (p.get("shop_source") or shop_label)
+            available = bool(p.get("available", True))
 
-    all_offers.setdefault(name, []).append((price, real_shop, available))
+            # ✅ VIGTIGT: Brug shop_source hvis den findes (fra Alisten.py),
+            # ellers fallback til shop_label
+            real_shop = (p.get("shop_source") or shop_label)
+
+            all_offers.setdefault(name, []).append((price, real_shop, available))
 
     print("TOTAL unikke produkter fundet:", len(all_offers))
 
@@ -223,7 +233,7 @@ def main():
 
     header = all_values[0] if all_values else []
 
-    # Price-kolonner ligger nu i mønster: col 3,6,9,... (step 3)
+    # Price-kolonner ligger i mønster: col 3,6,9,... (step 3)
     price_cols = []
     for c in range(3, len(header) + 1, 3):
         if header[c - 1].endswith(" Price"):
@@ -275,11 +285,19 @@ def main():
     summary_ws.update(values=all_values[:max_row], range_name=range_name)
     print(f"SUMMARY updated rows: {updates_count} | range: {range_name}")
 
-    # Send push (samlet)
+    # (Valgfrit) Sortér alfabetisk efter produktnavn (kolonne A)
+    # Du kan kommentere den ud hvis du ikke vil sortere.
+    try:
+        summary_ws.sort((1, "asc"), range=f"A2:{gspread.utils.rowcol_to_a1(max_row, max_col)}")
+        print("SUMMARY SORTED alphabetically")
+    except Exception as e:
+        print("Kunne ikke sortere arket:", e)
+
+    # Send push samlet
     if push_messages:
-        msg = "\n".join(push_messages[:20])  # max 20 linjer, så beskeden ikke bliver for lang
-        if len(push_messages) > 20:
-            msg += f"\n(+{len(push_messages) - 20} flere tilbud)"
+        msg = "\n".join(push_messages[:MAX_PUSH_LINES])
+        if len(push_messages) > MAX_PUSH_LINES:
+            msg += f"\n(+{len(push_messages) - MAX_PUSH_LINES} flere tilbud)"
         send_push(msg, push_user_key, push_app_token)
         print("PUSH SENT:", len(push_messages))
     else:
