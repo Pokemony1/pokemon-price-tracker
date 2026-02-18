@@ -13,6 +13,8 @@ jobs:
       SHEET_NAME: ${{ secrets.SHEET_NAME }}
       PUSH_USER_KEY: ${{ secrets.PUSH_USER_KEY }}
       PUSH_APP_TOKEN: ${{ secrets.PUSH_APP_TOKEN }}
+      SHEET_ID: ${{ secrets.SHEET_ID }}
+
 
     steps:
       - name: Checkout repo
