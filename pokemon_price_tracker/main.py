@@ -87,34 +87,42 @@ def parse_float(x):
 
 
 def main():
-    # ENV fra GitHub Actions Secrets
-    SHEET_NAME = os.getenv("SHEET_NAME", "PokemonPrices")
-    PUSH_USER_KEY = os.getenv("PUSH_USER_KEY", "")
-    PUSH_APP_TOKEN = os.getenv("PUSH_APP_TOKEN", "")
+    # --------- HARD TEST / DEBUG (så du ALTID kan se output) ----------
+    print("STARTER SCRIPT")
+    sheet_name = os.getenv("SHEET_NAME", "PokemonPrices")
+    print("SHEET_NAME =", sheet_name)
 
-    # 1) Connect til sheet
-    ws = connect_google_sheet(SHEET_NAME)
+    # Push env (må gerne være tom under test)
+    push_user_key = os.getenv("PUSH_USER_KEY", "")
+    push_app_token = os.getenv("PUSH_APP_TOKEN", "")
 
-    # ✅ BEVIS: skriv LAST_RUN så du kan se den rammer det rigtige ark
-    ws.update_cell(1, 10, "LAST_RUN")
-    ws.update_cell(1, 11, datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-    print("Skrev LAST_RUN i arket")
+    # Connect
+    ws = connect_google_sheet(sheet_name)
+    print("CONNECTED TO GOOGLE SHEET OK")
 
-    # 2) Dagens dato-kolonner
+    # Skriv tydeligt bevis i arket
+    ws.update_cell(1, 1, "HELLO_FROM_GITHUB_ACTIONS")
+    ws.update_cell(1, 2, datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    print("SKREV HELLO + TIMESTAMP I A1/B1 OK")
+    # ---------------------------------------------------------------
+
+    # Dagens dato-kolonner
     today_str = datetime.datetime.now().strftime("%d-%m-%Y")
     today_price_col, today_shop_col = ensure_headers(ws, today_str)
+    print("HEADERS OK:", today_price_col, today_shop_col)
 
-    # 3) Load shops
+    # Load shops
     shops = load_shops()
     print("Shops loaded:", [s[0] for s in shops])
 
-    # 4) Saml alle tilbud fra shops
+    # Saml alle tilbud fra shops
     # all_offers[name] = list of (price, shop_label, available)
     all_offers = {}
 
     for shop_label, shop_module in shops:
         try:
             products = shop_module.get_products()
+            print(f"{shop_label}: hentede {len(products)} produkter")
         except Exception as e:
             print(f"Fejl i shop {shop_label}: {e}")
             continue
@@ -130,7 +138,9 @@ def main():
 
             all_offers.setdefault(name, []).append((price, shop_label, available))
 
-    # 5) Vælg billigste pr. produkt (prioritér available=True)
+    print("TOTAL unikke produkter fundet:", len(all_offers))
+
+    # Vælg billigste pr. produkt (prioritér available=True)
     cheapest_today = {}
     for name, offers in all_offers.items():
         avail_offers = [o for o in offers if o[2] is True]
@@ -138,10 +148,10 @@ def main():
         cheapest = min(use, key=lambda t: t[0])
         cheapest_today[name] = cheapest  # (price, shop, available)
 
-    # 6) Find eksisterende rækker i sheet
+    # Find eksisterende rækker i sheet
     row_map = get_product_row_map(ws)
 
-    # 7) Tilføj nye produkter i bunden
+    # Tilføj nye produkter i bunden
     if cheapest_today:
         last_row = len(ws.col_values(1)) + 1
         new_rows = []
@@ -151,15 +161,16 @@ def main():
         if new_rows:
             ws.update(f"A{last_row}:A{last_row + len(new_rows) - 1}", new_rows)
             row_map = get_product_row_map(ws)
+            print("Tilføjede nye produkter:", len(new_rows))
 
-    # 8) Find alle pris-kolonner (col 3,5,7,... som ender med " Price")
+    # Find alle pris-kolonner (col 3,5,7,... som ender med " Price")
     header = ws.row_values(1)
     price_cols = []
     for c in range(3, len(header) + 1, 2):
         if header[c - 1].endswith(" Price"):
             price_cols.append(c)
 
-    # 9) Opdater dagens data + beregn median + push ved tilbud
+    # Opdater dagens data + beregn median + push ved tilbud
     push_messages = []
     updates_count = 0
 
@@ -198,12 +209,12 @@ def main():
 
     # Send push beskeder
     for msg in push_messages:
-        send_push(msg, PUSH_USER_KEY, PUSH_APP_TOKEN)
+        send_push(msg, push_user_key, push_app_token)
 
     print("Scan færdig. Produkter opdateret:", updates_count)
     print("Push sendt:", len(push_messages))
 
 
-# ✅ VIGTIGT: Uden denne kører filen, men main() bliver aldrig kaldt
+# ✅ VIGTIGT: uden denne kører filen, men main() bliver aldrig kaldt
 if __name__ == "__main__":
     main()
