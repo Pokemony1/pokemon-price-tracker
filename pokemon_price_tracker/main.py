@@ -167,25 +167,21 @@ def main():
     # all_offers[name] = list of (price, shop_label, available)
     all_offers = {}
 
-    for shop_label, shop_module in shops:
-        try:
-            products = shop_module.get_products()
-            print(f"{shop_label}: hentede {len(products)} produkter")
-        except Exception as e:
-            print(f"Fejl i shop {shop_label}: {e}")
-            continue
+    for p in products:
+    name = (p.get("name") or "").strip()
+    if not name:
+        continue
 
-        for p in products:
-            name = (p.get("name") or "").strip()
-            if not name:
-                continue
+    price = parse_float(p.get("price"))
+    if price is None:
+        continue
 
-            price = parse_float(p.get("price"))
-            if price is None:
-                continue
+    available = bool(p.get("available", True))
 
-            available = bool(p.get("available", True))
-            all_offers.setdefault(name, []).append((price, shop_label, available))
+    # ✅ NYT: hvis produktet kommer fra Alisten.py, brug shop_source
+    real_shop = (p.get("shop_source") or shop_label)
+
+    all_offers.setdefault(name, []).append((price, real_shop, available))
 
     print("TOTAL unikke produkter fundet:", len(all_offers))
 
