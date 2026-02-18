@@ -1,33 +1,17 @@
-name: Daily Pokemon Price Scan
-
-on:
-  schedule:
-    - cron: "0 7 * * *"   # dagligt 07:00 UTC (ca. 08:00 DK om vinteren)
-  workflow_dispatch:
-
-jobs:
-  run-scan:
-    runs-on: ubuntu-latest
-    env:
-      GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-      SHEET_NAME: ${{ secrets.SHEET_NAME }}
-      PUSH_USER_KEY: ${{ secrets.PUSH_USER_KEY }}
-      PUSH_APP_TOKEN: ${{ secrets.PUSH_APP_TOKEN }}
-
-    steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install dependencies
+      - name: Debug - list files
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          pwd
+          ls -la
+          ls -la pokemon_price_tracker || true
+          echo "----- first 60 lines of main.py -----"
+          sed -n '1,60p' pokemon_price_tracker/main.py || true
+
+      - name: Debug - run python minimal
+        run: |
+          python -V
+          python -c "print('PYTHON OK')"
 
       - name: Run scanner
         run: |
-          python -u pokemon_price_tracker/main.py
+          python -u -c "from pokemon_price_tracker import main; print('IMPORT OK'); main.main(); print('DONE')"
+
