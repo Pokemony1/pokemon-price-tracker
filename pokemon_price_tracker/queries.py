@@ -6,16 +6,17 @@ QUERIES = [
     "prismatic evolution",
     "prismatic evolutions",
 
-    # SV 151 (flere stavemåder)
+    # SV 151 (inkl. S&V-varianter)
     "scarlet & violet 151",
     "scarlet and violet 151",
-    "scarlet & violet: 151",
-    "scarlet and violet: 151",
     "sv 151",
+    "sv: 151",
+    "sv151",
     "pokemon 151",
-    "151",
+    "s&v 151",
+    "s&v: 151",
 
-    # Mega Evolution (generelt + under-sæt)
+    # Mega Evolution + sub-sets
     "mega evolution",
     "mega evolutions",
     "ascended heroes",
