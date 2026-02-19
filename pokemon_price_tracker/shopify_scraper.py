@@ -1,4 +1,46 @@
+import re
 import requests
+
+
+# -------- Singles (kort) indikatorer --------
+RARITY_WORDS = [
+    "common", "uncommon", "rare", "double rare",
+    "ultra rare", "secret rare", "illustration rare", "art rare",
+    "holo", "reverse holo", "reverse-holo", "reverseholo",
+]
+
+CONDITION_WORDS = [
+    "near mint", "nm", "lp", "mp", "hp", "played", "damaged",
+    "english / near mint", "reverse-holo normal",
+]
+
+# Kortnummer i [MEG-098], [SV1-123] osv.
+CARD_NO_BRACKET_RE = re.compile(r"\[[a-z0-9\-]{2,}\]", re.IGNORECASE)
+
+# "English / Near Mint / ..." mønster
+SLASHY_CONDITION_RE = re.compile(r"\b(english|near mint|reverse|holo)\b.*\/", re.IGNORECASE)
+
+
+def looks_like_single_card(title_or_text: str) -> bool:
+    t = (title_or_text or "").lower()
+
+    if CARD_NO_BRACKET_RE.search(t):
+        return True
+
+    if SLASHY_CONDITION_RE.search(t):
+        return True
+
+    if any(w in t for w in RARITY_WORDS):
+        return True
+
+    if any(w in t for w in CONDITION_WORDS):
+        return True
+
+    # Mange singles har mønstre som "(Uncommon)" eller "(Common)"
+    if re.search(r"\((common|uncommon|rare)\)", t):
+        return True
+
+    return False
 
 
 def scan_shopify_store_json(domain: str, queries: list[str]) -> list[dict]:
@@ -13,48 +55,25 @@ def scan_shopify_store_json(domain: str, queries: list[str]) -> list[dict]:
         "available": bool
       }
     """
-
     page = 1
     products = []
     queries_l = [q.lower() for q in queries]
 
-    # Ord vi IKKE vil have
     banned_language_words = [
-        "japanese",
-        "japansk",
-        "korean",
-        "koreansk",
-        "chinese",
-        "kinesisk",
+        "japanese", "japansk", "korean", "koreansk", "chinese", "kinesisk",
+        "german", "tysk", "french", "fransk",
     ]
 
     banned_graded_words = [
-        "psa",
-        "bgs",
-        "cgc",
-        "graded",
+        "psa", "bgs", "cgc", "graded", "slab",
     ]
 
-    banned_single_card_indicators = [
-        "#",  # kortnummer
-        "art rare",
-        "illustration rare",
-        "secret rare",
-        "ultra rare",
-        "single card",
-        "holo",
-        "reverse holo",
-    ]
-
-    # Vi KRÆVER at det er sealed produkt
+    # Vi KRÆVER sealed produkt
     required_product_words = [
-        "booster",
-        "box",
-        "bundle",
-        "collection",
-        "elite trainer",
-        "etb",
-        "tin",
+        "booster", "box", "bundle", "collection",
+        "elite trainer", "etb", "tin", "blister",
+        "display",  # display er stadig sealed, men håndteres i grouping (8x osv.)
+        "sticker", "poster", "figure", "pin",
     ]
 
     while True:
@@ -73,37 +92,32 @@ def scan_shopify_store_json(domain: str, queries: list[str]) -> list[dict]:
             break
 
         for product in data["products"]:
-            full_text = (
-                (product.get("title") or "")
-                + (product.get("body_html") or "")
-                + (product.get("product_type") or "")
-            ).lower()
+            title_raw = (product.get("title") or "")
+            body_raw = (product.get("body_html") or "")
+            ptype_raw = (product.get("product_type") or "")
 
-            title = (product.get("title") or "").lower()
+            full_text = (title_raw + " " + body_raw + " " + ptype_raw).lower()
+            title = title_raw.lower()
 
-            # Matcher vores søgninger?
+            # Matcher queries?
             if not any(q in full_text for q in queries_l):
                 continue
 
-            # ----------- FILTRERING -----------
-
-            # Fjern sprog vi ikke vil have
+            # ---- Hårde udelukkelser ----
             if any(word in title for word in banned_language_words):
                 continue
 
-            # Fjern graded / PSA
             if any(word in title for word in banned_graded_words):
                 continue
 
-            # Fjern enkeltkort
-            if any(word in title for word in banned_single_card_indicators):
+            # Singles check (kort)
+            if looks_like_single_card(title_raw) or looks_like_single_card(full_text):
                 continue
 
-            # Kræv sealed produkt
+            # Kræv sealed (titel)
             if not any(word in title for word in required_product_words):
                 continue
-
-            # ----------------------------------
+            # ----------------------------
 
             for variant in product.get("variants", []):
                 try:
@@ -114,7 +128,11 @@ def scan_shopify_store_json(domain: str, queries: list[str]) -> list[dict]:
                 variant_title = variant.get("title", "")
                 variant_name = "" if variant_title == "Default Title" else variant_title
 
-                full_name = f"{product.get('title','').strip()} {variant_name}".strip()
+                full_name = f"{title_raw.strip()} {variant_name}".strip()
+
+                # variant kan også indeholde singles/condition ting
+                if looks_like_single_card(full_name):
+                    continue
 
                 products.append(
                     {

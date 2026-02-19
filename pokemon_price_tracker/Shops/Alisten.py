@@ -1,10 +1,8 @@
 from pokemon_price_tracker.shopify_scraper import scan_shopify_store_json
 from pokemon_price_tracker.queries import QUERIES
 
-# Loaderen i main.py bruger SHOP_NAME som label
 SHOP_NAME = "A-list"
 
-# A-list (Shopify /products.json) – kun dem du vil have med lige nu
 A_LIST = [
     ("mtgwebshop", "mtgwebshop.dk"),
     ("spilforsyningen", "spilforsyningen.dk"),
@@ -17,7 +15,7 @@ A_LIST = [
 def get_products():
     """
     Scanner alle A-list shops og returnerer samlet liste.
-    Vigtigt: Vi tilføjer shop_source pr produkt, så main.py kan skrive korrekt shop-navn i Sheet.
+    Vi tilføjer shop_source pr produkt, så main.py kan skrive korrekt shop-navn i Sheet.
     """
     all_products = []
 
@@ -27,7 +25,6 @@ def get_products():
             products = scan_shopify_store_json(domain, QUERIES)
             print(f"{shop_name}: hentede {len(products)} produkter")
 
-            # Tag hver record og tilføj hvor den kom fra
             for p in products:
                 p["shop_source"] = shop_name
 

@@ -8,5 +8,5 @@ venv/
 __pycache__/
 *.pyc
 service_account.json
->>>>>>> 93e6732a35177dc5a9a76693e4a5a63c10ed80fb
 .env
+.DS_Store

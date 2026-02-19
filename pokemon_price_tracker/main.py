@@ -7,6 +7,7 @@ import gspread
 
 from pokemon_price_tracker.google_sheet import connect_google_sheet
 from pokemon_price_tracker.push_notification import send_push
+from pokemon_price_tracker.product_grouping import build_group_key_and_name
 
 
 # ----------------- KONFIG -----------------
@@ -14,18 +15,13 @@ SHEET_SUMMARY_TITLE = "Sheet1"
 SHEET_IN_STOCK_TITLE = "Billigste in stock"
 SHEET_RAW_TITLE = "RawOffers"
 
-# Push-tilbud logik (valgfrit)
-MIN_HISTORY_FOR_PUSH = 5     # kræv mindst 5 historiske datapunkter før push
-DISCOUNT_PCT = 0.15          # 15% under median => push
-MAX_PUSH_LINES = 20          # max linjer i push-besked
+MIN_HISTORY_FOR_PUSH = 5
+DISCOUNT_PCT = 0.15
+MAX_PUSH_LINES = 20
 # ------------------------------------------
 
 
 def load_shops():
-    """
-    Loader alle shops fra pokemon_price_tracker/Shops/ der har funktionen get_products().
-    Returnerer liste af tuples: (shop_label, module)
-    """
     shops = []
     package_path = os.path.join(os.path.dirname(__file__), "Shops")
     package_name = "pokemon_price_tracker.Shops"
@@ -46,16 +42,6 @@ def parse_float(x):
 
 
 def ensure_headers(ws, today_str):
-    """
-    Sikrer headers:
-      A1 = Product
-      B1 = Median
-      og for dagens dato 3 kolonner:
-        "<date> Price"
-        "<date> Shop"
-        "<date> Stock"
-    Returnerer (today_price_col, today_shop_col, today_stock_col)
-    """
     header = ws.row_values(1)
 
     if len(header) < 1 or header[0] != "Product":
@@ -99,28 +85,28 @@ def ensure_raw_headers(raw_ws):
         raw_ws.update("A1:F1", [wanted])
 
 
-def append_raw_offers(raw_ws, today_str, offers_by_product):
+def append_raw_offers(raw_ws, today_str, offers_by_group, group_name_map):
     """
-    offers_by_product: dict[name] -> list of (price, shop_label, available)
-    Skriver ALLE fund (ikke kun billigste) i RawOffers med append_rows (1 API-call).
+    offers_by_group: dict[group_key] -> list of (price, shop_label, available)
+    Logger ALLE fund i RawOffers (1 API-call).
+    Product-kolonnen bliver canonical group name (så den matcher Sheet1).
     """
     now_ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     rows = []
-    for name, offers in offers_by_product.items():
+
+    for gkey, offers in offers_by_group.items():
+        canonical_name = group_name_map.get(gkey, gkey)
         for price, shop, available in offers:
-            rows.append([now_ts, today_str, name, str(price), shop, "TRUE" if available else "FALSE"])
+            rows.append([now_ts, today_str, canonical_name, str(price), shop, "TRUE" if available else "FALSE"])
 
     if rows:
         raw_ws.append_rows(rows, value_input_option="USER_ENTERED")
 
 
 def get_product_row_map(ws):
-    """
-    Læser kolonne A og returnerer dict: product_name -> row_index
-    """
     col = ws.col_values(1)
     mapping = {}
-    for idx, name in enumerate(col[1:], start=2):  # skip header
+    for idx, name in enumerate(col[1:], start=2):
         if name:
             mapping[name] = idx
     return mapping
@@ -128,8 +114,7 @@ def get_product_row_map(ws):
 
 def choose_cheapest_overall(offers):
     """
-    offers: list of (price, shop, available)
-    Vælger billigste, men prioriterer available=True hvis muligt (som din gamle logik).
+    Vælg billigste, men prioriter IN_STOCK hvis muligt (din gamle logik).
     """
     avail_offers = [o for o in offers if o[2] is True]
     use = avail_offers if avail_offers else offers
@@ -138,10 +123,7 @@ def choose_cheapest_overall(offers):
 
 def choose_cheapest_in_stock_else_fallback(offers):
     """
-    offers: list of (price, shop, available)
-    Reglen du bad om:
-      - vælg billigste IN_STOCK (available=True)
-      - hvis ingen er in stock -> vælg billigste uanset
+    Billigste IN_STOCK ellers billigste overall.
     """
     sorted_offers = sorted(offers, key=lambda t: t[0])
     for o in sorted_offers:
@@ -151,16 +133,8 @@ def choose_cheapest_in_stock_else_fallback(offers):
 
 
 def update_price_sheet(ws, today_str, chosen_today, do_sort_alpha=True):
-    """
-    Opdaterer et sheet (Sheet1 eller "Billigste in stock") med:
-      - Produktliste i kol A
-      - Median i kol B
-      - Dagens Price/Shop/Stock i nye kolonner
-    chosen_today: dict[name] -> (price, shop, available)
-    """
     today_price_col, today_shop_col, today_stock_col = ensure_headers(ws, today_str)
 
-    # Sikr at alle produkter findes i arket
     row_map = get_product_row_map(ws)
     all_names = list(chosen_today.keys())
 
@@ -169,7 +143,6 @@ def update_price_sheet(ws, today_str, chosen_today, do_sort_alpha=True):
         ws.append_rows([[n] for n in new_names], value_input_option="USER_ENTERED")
         row_map = get_product_row_map(ws)
 
-    # Hent matrix
     all_values = ws.get_all_values()
     max_row = max(row_map.values()) if row_map else 1
     max_col = max(today_stock_col, 2)
@@ -182,26 +155,23 @@ def update_price_sheet(ws, today_str, chosen_today, do_sort_alpha=True):
 
     header = all_values[0] if all_values else []
 
-    # Price-kolonner: col 3,6,9,... (step 3)
     price_cols = []
     for c in range(3, len(header) + 1, 3):
         if header[c - 1].endswith(" Price"):
             price_cols.append(c)
 
     updates_count = 0
-    push_candidates = []  # (name, price, shop, median, hist_count)
+    push_candidates = []
 
     for name, (price, shop_label, available) in chosen_today.items():
         r = row_map.get(name)
         if not r:
             continue
 
-        # Dagens data
         all_values[r - 1][today_price_col - 1] = str(price)
         all_values[r - 1][today_shop_col - 1] = str(shop_label)
         all_values[r - 1][today_stock_col - 1] = "IN_STOCK" if available else "OUT_OF_STOCK"
 
-        # Historiske priser (uden dagens)
         hist_prices = []
         for c in price_cols:
             if c == today_price_col:
@@ -217,17 +187,14 @@ def update_price_sheet(ws, today_str, chosen_today, do_sort_alpha=True):
         prices_for_median = hist_prices + [float(price)]
         median_price = float(np.median(prices_for_median)) if prices_for_median else float(price)
 
-        # Median i kol B
         all_values[r - 1][1] = f"{median_price:.6g}"
         updates_count += 1
 
         push_candidates.append((name, float(price), shop_label, float(median_price), len(hist_prices)))
 
-    # Skriv tilbage i ét kald
     range_name = f"A1:{gspread.utils.rowcol_to_a1(max_row, max_col)}"
     ws.update(values=all_values[:max_row], range_name=range_name)
 
-    # Sortér alfabetisk (kol A)
     if do_sort_alpha:
         try:
             ws.sort((1, "asc"), range=f"A2:{gspread.utils.rowcol_to_a1(max_row, max_col)}")
@@ -253,11 +220,9 @@ def main():
 
     today_str = datetime.datetime.now().strftime("%d-%m-%Y")
 
-    # Connect (Spreadsheet)
     sh = connect_google_sheet()
     print("CONNECTED TO GOOGLE SHEET OK")
 
-    # Åbn/opret sheets
     try:
         ws_summary = sh.worksheet(SHEET_SUMMARY_TITLE)
     except Exception:
@@ -273,12 +238,12 @@ def main():
     except Exception:
         ws_raw = sh.add_worksheet(title=SHEET_RAW_TITLE, rows=5000, cols=10)
 
-    # Load shops (i dit setup typisk kun "A-list" fra Alisten.py)
     shops = load_shops()
     print("Shops loaded:", [s[0] for s in shops])
 
-    # all_offers[name] = list of (price, shop, available)
-    all_offers = {}
+    # offers_by_group[group_key] = list of (price, shop, available)
+    offers_by_group = {}
+    group_name_map = {}  # group_key -> canonical name
 
     for shop_label, shop_module in shops:
         try:
@@ -289,8 +254,8 @@ def main():
             continue
 
         for p in products:
-            name = (p.get("name") or "").strip()
-            if not name:
+            raw_name = (p.get("name") or "").strip()
+            if not raw_name:
                 continue
 
             price = parse_float(p.get("price"))
@@ -298,44 +263,42 @@ def main():
                 continue
 
             available = bool(p.get("available", True))
-
-            # ✅ vigtig: brug real shop fra Alisten.py hvis den findes
             real_shop = (p.get("shop_source") or shop_label)
 
-            all_offers.setdefault(name, []).append((price, real_shop, available))
+            group_key, canonical_name = build_group_key_and_name(raw_name)
+            group_name_map[group_key] = canonical_name
 
-    print("TOTAL unikke produkter fundet:", len(all_offers))
+            offers_by_group.setdefault(group_key, []).append((price, real_shop, available))
 
-    # Raw log
+    print("TOTAL grupper fundet:", len(offers_by_group))
+
     ensure_raw_headers(ws_raw)
-    append_raw_offers(ws_raw, today_str, all_offers)
+    append_raw_offers(ws_raw, today_str, offers_by_group, group_name_map)
     print("RAW OFFERS appended")
 
-    # Byg 2 valg:
-    # 1) Sheet1: billigste (med available-prioritet som før)
+    # Vælg 2 output-ark baseret på gruppering
     chosen_summary = {}
-    # 2) Billigste in stock: billigste IN_STOCK else billigste overall
     chosen_instock = {}
 
-    for name, offers in all_offers.items():
-        chosen_summary[name] = choose_cheapest_overall(offers)
-        chosen_instock[name] = choose_cheapest_in_stock_else_fallback(offers)
+    for gkey, offers in offers_by_group.items():
+        canonical_name = group_name_map.get(gkey, gkey)
 
-    # Opdater Sheet1
+        chosen_summary[canonical_name] = choose_cheapest_overall(offers)
+        chosen_instock[canonical_name] = choose_cheapest_in_stock_else_fallback(offers)
+
     info_summary = update_price_sheet(ws_summary, today_str, chosen_summary, do_sort_alpha=True)
     print(
         f"SUMMARY updated rows: {info_summary['updates_count']} | "
         f"range: A1:{gspread.utils.rowcol_to_a1(info_summary['max_row'], info_summary['max_col'])}"
     )
 
-    # Opdater Billigste in stock
     info_instock = update_price_sheet(ws_instock, today_str, chosen_instock, do_sort_alpha=True)
     print(
         f"IN_STOCK updated rows: {info_instock['updates_count']} | "
         f"range: A1:{gspread.utils.rowcol_to_a1(info_instock['max_row'], info_instock['max_col'])}"
     )
 
-    # Push (vi bruger "Billigste in stock"-arket som basis, fordi det er reelt køb)
+    # Push baseret på "Billigste in stock"
     push_messages = []
     for (name, price, shop, median, hist_count) in info_instock["push_candidates"]:
         if hist_count >= MIN_HISTORY_FOR_PUSH:

@@ -7,7 +7,7 @@ from oauth2client.service_account import ServiceAccountCredentials
 def connect_google_sheet():
     """
     Returnerer hele Spreadsheet-objektet (ikke kun Sheet1),
-    så vi kan bruge både Sheet1 (Summary) og RawOffers.
+    så vi kan bruge både Sheet1 (Summary), Billigste in stock og RawOffers.
     """
     scope = [
         "https://spreadsheets.google.com/feeds",
