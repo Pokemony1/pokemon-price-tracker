@@ -10,7 +10,6 @@ from pokemon_price_tracker.push_notification import send_push
 from pokemon_price_tracker.product_grouping import build_group_key_and_name
 
 
-# ----------------- KONFIG -----------------
 SHEET_SUMMARY_TITLE = "Sheet1"
 SHEET_IN_STOCK_TITLE = "Billigste in stock"
 SHEET_RAW_TITLE = "RawOffers"
@@ -18,7 +17,6 @@ SHEET_RAW_TITLE = "RawOffers"
 MIN_HISTORY_FOR_PUSH = 5
 DISCOUNT_PCT = 0.15
 MAX_PUSH_LINES = 20
-# ------------------------------------------
 
 
 def load_shops():
@@ -86,14 +84,8 @@ def ensure_raw_headers(raw_ws):
 
 
 def append_raw_offers(raw_ws, today_str, offers_by_group, group_name_map):
-    """
-    offers_by_group: dict[group_key] -> list of (price, shop_label, available)
-    Logger ALLE fund i RawOffers (1 API-call).
-    Product-kolonnen bliver canonical group name (så den matcher Sheet1).
-    """
     now_ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     rows = []
-
     for gkey, offers in offers_by_group.items():
         canonical_name = group_name_map.get(gkey, gkey)
         for price, shop, available in offers:
@@ -113,18 +105,12 @@ def get_product_row_map(ws):
 
 
 def choose_cheapest_overall(offers):
-    """
-    Vælg billigste, men prioriter IN_STOCK hvis muligt (din gamle logik).
-    """
     avail_offers = [o for o in offers if o[2] is True]
     use = avail_offers if avail_offers else offers
     return min(use, key=lambda t: t[0])
 
 
 def choose_cheapest_in_stock_else_fallback(offers):
-    """
-    Billigste IN_STOCK ellers billigste overall.
-    """
     sorted_offers = sorted(offers, key=lambda t: t[0])
     for o in sorted_offers:
         if o[2] is True:
@@ -189,7 +175,6 @@ def update_price_sheet(ws, today_str, chosen_today, do_sort_alpha=True):
 
         all_values[r - 1][1] = f"{median_price:.6g}"
         updates_count += 1
-
         push_candidates.append((name, float(price), shop_label, float(median_price), len(hist_prices)))
 
     range_name = f"A1:{gspread.utils.rowcol_to_a1(max_row, max_col)}"
@@ -202,9 +187,6 @@ def update_price_sheet(ws, today_str, chosen_today, do_sort_alpha=True):
             pass
 
     return {
-        "today_price_col": today_price_col,
-        "today_shop_col": today_shop_col,
-        "today_stock_col": today_stock_col,
         "max_row": max_row,
         "max_col": max_col,
         "updates_count": updates_count,
@@ -217,7 +199,6 @@ def main():
 
     push_user_key = os.getenv("PUSH_USER_KEY", "")
     push_app_token = os.getenv("PUSH_APP_TOKEN", "")
-
     today_str = datetime.datetime.now().strftime("%d-%m-%Y")
 
     sh = connect_google_sheet()
@@ -241,9 +222,8 @@ def main():
     shops = load_shops()
     print("Shops loaded:", [s[0] for s in shops])
 
-    # offers_by_group[group_key] = list of (price, shop, available)
     offers_by_group = {}
-    group_name_map = {}  # group_key -> canonical name
+    group_name_map = {}
 
     for shop_label, shop_module in shops:
         try:
@@ -265,9 +245,14 @@ def main():
             available = bool(p.get("available", True))
             real_shop = (p.get("shop_source") or shop_label)
 
-            group_key, canonical_name = build_group_key_and_name(raw_name)
-            group_name_map[group_key] = canonical_name
+            # NYT: brug hints + full_text (grouping_text)
+            group_key, canonical_name = build_group_key_and_name(
+                raw_name,
+                extra_text=p.get("grouping_text"),
+                series_hint=p.get("series_hint"),
+            )
 
+            group_name_map[group_key] = canonical_name
             offers_by_group.setdefault(group_key, []).append((price, real_shop, available))
 
     print("TOTAL grupper fundet:", len(offers_by_group))
@@ -276,29 +261,20 @@ def main():
     append_raw_offers(ws_raw, today_str, offers_by_group, group_name_map)
     print("RAW OFFERS appended")
 
-    # Vælg 2 output-ark baseret på gruppering
     chosen_summary = {}
     chosen_instock = {}
 
     for gkey, offers in offers_by_group.items():
         canonical_name = group_name_map.get(gkey, gkey)
-
         chosen_summary[canonical_name] = choose_cheapest_overall(offers)
         chosen_instock[canonical_name] = choose_cheapest_in_stock_else_fallback(offers)
 
     info_summary = update_price_sheet(ws_summary, today_str, chosen_summary, do_sort_alpha=True)
-    print(
-        f"SUMMARY updated rows: {info_summary['updates_count']} | "
-        f"range: A1:{gspread.utils.rowcol_to_a1(info_summary['max_row'], info_summary['max_col'])}"
-    )
+    print(f"SUMMARY updated rows: {info_summary['updates_count']}")
 
     info_instock = update_price_sheet(ws_instock, today_str, chosen_instock, do_sort_alpha=True)
-    print(
-        f"IN_STOCK updated rows: {info_instock['updates_count']} | "
-        f"range: A1:{gspread.utils.rowcol_to_a1(info_instock['max_row'], info_instock['max_col'])}"
-    )
+    print(f"IN_STOCK updated rows: {info_instock['updates_count']}")
 
-    # Push baseret på "Billigste in stock"
     push_messages = []
     for (name, price, shop, median, hist_count) in info_instock["push_candidates"]:
         if hist_count >= MIN_HISTORY_FOR_PUSH:

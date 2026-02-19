@@ -1,6 +1,6 @@
 import re
 import requests
-
+from pokemon_price_tracker.product_grouping import detect_series
 
 # -------- Singles (kort) indikatorer --------
 RARITY_WORDS = [
@@ -11,13 +11,10 @@ RARITY_WORDS = [
 
 CONDITION_WORDS = [
     "near mint", "nm", "lp", "mp", "hp", "played", "damaged",
-    "english / near mint", "reverse-holo normal",
+    "reverse-holo normal",
 ]
 
-# Kortnummer i [MEG-098], [SV1-123] osv.
 CARD_NO_BRACKET_RE = re.compile(r"\[[a-z0-9\-]{2,}\]", re.IGNORECASE)
-
-# "English / Near Mint / ..." mønster
 SLASHY_CONDITION_RE = re.compile(r"\b(english|near mint|reverse|holo)\b.*\/", re.IGNORECASE)
 
 
@@ -26,35 +23,52 @@ def looks_like_single_card(title_or_text: str) -> bool:
 
     if CARD_NO_BRACKET_RE.search(t):
         return True
-
     if SLASHY_CONDITION_RE.search(t):
         return True
-
     if any(w in t for w in RARITY_WORDS):
         return True
-
     if any(w in t for w in CONDITION_WORDS):
         return True
-
-    # Mange singles har mønstre som "(Uncommon)" eller "(Common)"
     if re.search(r"\((common|uncommon|rare)\)", t):
         return True
 
     return False
 
 
-def scan_shopify_store_json(domain: str, queries: list[str]) -> list[dict]:
+def _series_hint_from_queries(full_text: str) -> str:
     """
-    Scanner Shopify /products.json (offentlig endpoint) og finder varianter hvor
-    tekst matcher queries.
+    Option 2:
+    Hvis query-match tydeligt peger på en serie, så brug det som hint,
+    selv hvis titlen ikke indeholder serienavnet.
+    """
+    t = (full_text or "").lower()
 
-    Returnerer liste af:
-      {
-        "name": str,
-        "price": float,
-        "available": bool
-      }
-    """
+    # Mega Evolution sub-sets
+    if "ascended heroes" in t:
+        return "Mega Evolution - Ascended Heroes"
+    if "phantasmal flames" in t:
+        return "Mega Evolution - Phantasmal Flames"
+    if "perfect order" in t:
+        return "Mega Evolution - Perfect Order"
+
+    # Mega Evolution generic
+    if "mega evolution" in t or "mega evolutions" in t:
+        return "Mega Evolution"
+
+    # SV151 (undgå at bruge bare "151" som hint – for risikabelt)
+    if ("sv 151" in t) or ("pokemon 151" in t) or ("scarlet & violet 151" in t) or ("scarlet and violet 151" in t):
+        return "Scarlet & Violet 151"
+
+    # Crown Zenith / Prismatic
+    if "crown zenith" in t:
+        return "Crown Zenith"
+    if "prismatic evolution" in t or "prismatic evolutions" in t:
+        return "Prismatic Evolutions"
+
+    return "Unknown Series"
+
+
+def scan_shopify_store_json(domain: str, queries: list[str]) -> list[dict]:
     page = 1
     products = []
     queries_l = [q.lower() for q in queries]
@@ -64,16 +78,12 @@ def scan_shopify_store_json(domain: str, queries: list[str]) -> list[dict]:
         "german", "tysk", "french", "fransk",
     ]
 
-    banned_graded_words = [
-        "psa", "bgs", "cgc", "graded", "slab",
-    ]
+    banned_graded_words = ["psa", "bgs", "cgc", "graded", "slab"]
 
-    # Vi KRÆVER sealed produkt
     required_product_words = [
         "booster", "box", "bundle", "collection",
         "elite trainer", "etb", "tin", "blister",
-        "display",  # display er stadig sealed, men håndteres i grouping (8x osv.)
-        "sticker", "poster", "figure", "pin",
+        "display", "sticker", "poster", "figure", "pin",
     ]
 
     while True:
@@ -96,28 +106,33 @@ def scan_shopify_store_json(domain: str, queries: list[str]) -> list[dict]:
             body_raw = (product.get("body_html") or "")
             ptype_raw = (product.get("product_type") or "")
 
-            full_text = (title_raw + " " + body_raw + " " + ptype_raw).lower()
-            title = title_raw.lower()
+            full_text = (title_raw + " " + body_raw + " " + ptype_raw)
+            full_text_l = full_text.lower()
+            title_l = title_raw.lower()
 
             # Matcher queries?
-            if not any(q in full_text for q in queries_l):
+            if not any(q in full_text_l for q in queries_l):
                 continue
 
             # ---- Hårde udelukkelser ----
-            if any(word in title for word in banned_language_words):
+            if any(word in title_l for word in banned_language_words):
                 continue
-
-            if any(word in title for word in banned_graded_words):
+            if any(word in title_l for word in banned_graded_words):
                 continue
-
-            # Singles check (kort)
             if looks_like_single_card(title_raw) or looks_like_single_card(full_text):
                 continue
 
             # Kræv sealed (titel)
-            if not any(word in title for word in required_product_words):
+            if not any(word in title_l for word in required_product_words):
                 continue
             # ----------------------------
+
+            # Option 1 + 2:
+            # - series_hint fra query-match (robust)
+            # - hvis stadig Unknown → prøv at detektere ud fra full_text (inkl body/product_type)
+            series_hint = _series_hint_from_queries(full_text_l)
+            if series_hint == "Unknown Series":
+                series_hint = detect_series(full_text)
 
             for variant in product.get("variants", []):
                 try:
@@ -127,10 +142,8 @@ def scan_shopify_store_json(domain: str, queries: list[str]) -> list[dict]:
 
                 variant_title = variant.get("title", "")
                 variant_name = "" if variant_title == "Default Title" else variant_title
-
                 full_name = f"{title_raw.strip()} {variant_name}".strip()
 
-                # variant kan også indeholde singles/condition ting
                 if looks_like_single_card(full_name):
                     continue
 
@@ -139,6 +152,9 @@ def scan_shopify_store_json(domain: str, queries: list[str]) -> list[dict]:
                         "name": full_name,
                         "price": price,
                         "available": bool(variant.get("available", False)),
+                        # bruges til bedre serie-detektion i grouping:
+                        "series_hint": series_hint,
+                        "grouping_text": full_text,  # title + body_html + product_type
                     }
                 )
 

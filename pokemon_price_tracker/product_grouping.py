@@ -4,6 +4,7 @@ from typing import Optional, Tuple
 _ws_re = re.compile(r"\s+")
 _punct_re = re.compile(r"[^\w\s&x\-]+")
 
+
 def _clean(s: str) -> str:
     s = (s or "").strip().lower()
     s = s.replace("æ", "ae").replace("ø", "oe").replace("å", "aa")
@@ -15,15 +16,15 @@ def _clean(s: str) -> str:
 
 # ----------------------------
 # Serie / Set detektion
-# (bemærk: specifikke Mega Evolution "sub-sets" skal matche før generic)
+# (specifikke sub-sets før generic)
 # ----------------------------
 SERIES_PATTERNS = [
-    # Mega Evolution sub-sets (eksempler du nævnte)
+    # Mega Evolution sub-sets
     ("Mega Evolution - Ascended Heroes", [r"\bascended heroes\b"]),
     ("Mega Evolution - Phantasmal Flames", [r"\bphantasmal flames\b"]),
     ("Mega Evolution - Perfect Order", [r"\bperfect order\b"]),
 
-    # Generel Mega Evolution (fallback)
+    # Generel Mega Evolution fallback
     ("Mega Evolution", [r"\bmega evolution(s)?\b"]),
 
     # Crown Zenith
@@ -36,13 +37,15 @@ SERIES_PATTERNS = [
     ("Scarlet & Violet 151", [
         r"\bscarlet\s*&\s*violet\s*:?\s*151\b",
         r"\bscarlet\s*and\s*violet\s*:?\s*151\b",
+        r"\bscarlet\s+violet\s*:?\s*151\b",
         r"\bsv\s*151\b",
         r"\bpokemon\s*151\b",
     ]),
 ]
 
-def detect_series(title: str) -> str:
-    t = _clean(title)
+
+def detect_series(text: str) -> str:
+    t = _clean(text)
     for series_name, pats in SERIES_PATTERNS:
         for p in pats:
             if re.search(p, t):
@@ -99,6 +102,7 @@ TYPE_RULES = [
     ("Box", [r"\bbox\b"]),
 ]
 
+
 def detect_type(title: str) -> str:
     t = _clean(title)
     for type_name, pats in TYPE_RULES:
@@ -108,16 +112,29 @@ def detect_type(title: str) -> str:
     return "Sealed Product"
 
 
-def build_group_key_and_name(product_title: str) -> Tuple[str, str]:
-    series = detect_series(product_title)
+def build_group_key_and_name(
+    product_title: str,
+    extra_text: Optional[str] = None,
+    series_hint: Optional[str] = None,
+) -> Tuple[str, str]:
+    """
+    Forbedret:
+      - Bruger series_hint hvis den findes
+      - Ellers prøver vi først på titlen, og hvis Unknown → prøver vi extra_text (body/product_type)
+    """
+    series = "Unknown Series"
+
+    if series_hint and series_hint != "Unknown Series":
+        series = series_hint
+    else:
+        series = detect_series(product_title)
+        if series == "Unknown Series" and extra_text:
+            series = detect_series(extra_text)
+
     ptype = detect_type(product_title)
     count_tag = detect_count_tag(product_title)
 
     key = f"{series}|{ptype}|{count_tag or ''}"
-
-    if count_tag:
-        canonical = f"{series}: {ptype} ({count_tag})"
-    else:
-        canonical = f"{series}: {ptype}"
+    canonical = f"{series}: {ptype}" + (f" ({count_tag})" if count_tag else "")
 
     return key, canonical
