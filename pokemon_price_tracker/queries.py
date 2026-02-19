@@ -6,7 +6,8 @@ QUERIES = [
     "prismatic evolution",
     "prismatic evolutions",
 
-    # SV 151 (inkl. S&V-varianter)
+    # SV 151 (mere loose)
+    "151",
     "scarlet & violet 151",
     "scarlet and violet 151",
     "sv 151",

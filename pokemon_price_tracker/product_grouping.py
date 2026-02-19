@@ -15,32 +15,22 @@ def _clean(s: str) -> str:
 
 
 SERIES_PATTERNS = [
-    # Mega Evolution sub-sets
     ("Mega Evolution - Ascended Heroes", [r"\bascended heroes\b"]),
     ("Mega Evolution - Phantasmal Flames", [r"\bphantasmal flames\b"]),
     ("Mega Evolution - Perfect Order", [r"\bperfect order\b"]),
-
-    # Generic Mega Evolution
     ("Mega Evolution", [r"\bmega evolution(s)?\b"]),
-
-    # Crown Zenith
     ("Crown Zenith", [r"\bcrown zenith\b"]),
-
-    # Prismatic
     ("Prismatic Evolutions", [r"\bprismatic evolution(s)?\b"]),
 
-    # SV 151 (inkl. S&V: 151)
+    # LØS 151: hvis teksten indeholder 151, så er det 151
     ("Scarlet & Violet 151", [
+        r"\b151\b",
         r"\bscarlet\s*&\s*violet\s*:?\s*151\b",
         r"\bscarlet\s*and\s*violet\s*:?\s*151\b",
         r"\bsv\s*:?\s*151\b",
         r"\bsv151\b",
         r"\bpokemon\s*151\b",
         r"\bs\s*&\s*v\s*:?\s*151\b",
-        r"\bs&v\s*:?\s*151\b",
-        # “safe” fallback (ikke bare 151 alene)
-        r"\bpokemon\b.*\b151\b",
-        r"\b151\b.*\bpokemon\b",
     ]),
 ]
 
@@ -57,27 +47,22 @@ def detect_series(text: str) -> str:
 def detect_count_tag(title: str) -> Optional[str]:
     t = _clean(title)
 
-    # 8x / 10x osv.
     m = re.search(r"\b(\d{1,3})\s*x\b", t)
     if m:
         return f"{m.group(1)}x"
 
-    # 36 booster packs / 6 packs osv.
     m = re.search(r"\b(\d{1,3})\s*(booster\s*packs|packs)\b", t)
     if m:
         return f"{m.group(1)} packs"
 
-    # "Alle 10 ..." / "All 10 ..." (typisk displays)
     if "display" in t:
         m = re.search(r"\b(alle|all)\s*(\d{1,3})\b", t)
         if m:
             return f"{m.group(2)}x"
-        # fx "(10 mini-tins)"
         m = re.search(r"\b(\d{1,3})\s*(mini\s*tins?|tins?)\b", t)
         if m:
             return f"{m.group(1)}x"
 
-    # pack/case of N
     m = re.search(r"\b(pack|case)\s*of\s*(\d{1,3})\b", t)
     if m:
         return f"{m.group(2)}x"
@@ -86,9 +71,7 @@ def detect_count_tag(title: str) -> Optional[str]:
 
 
 TYPE_RULES = [
-    # Mere specifik før “Collection”
     ("Ultra Premium Collection", [r"\bultra premium collection\b", r"\bupc\b"]),
-
     ("Pokemon Center ETB Plus", [r"\bpokemon center\b.*\betb\b", r"\betb\b.*\bplus\b"]),
     ("Elite Trainer Box", [r"\belite trainer box\b", r"\betb\b"]),
     ("Booster Box", [r"\bbooster box\b"]),

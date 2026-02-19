@@ -3,7 +3,6 @@ import requests
 from pokemon_price_tracker.product_grouping import detect_series
 
 
-# -------- Singles (kort) indikatorer --------
 RARITY_WORDS = [
     "common", "uncommon", "rare", "double rare",
     "ultra rare", "secret rare", "illustration rare", "art rare",
@@ -38,9 +37,8 @@ def looks_like_single_card(title_or_text: str) -> bool:
 
 def _series_hint_from_queries(full_text_lower: str) -> str:
     """
-    "Hint" baseret på hvad teksten indeholder.
-    Nu inkluderer vi en sikker 151-fallback:
-      - kun hvis 'pokemon' findes OG der står 151 som et helt tal
+    LØS 151:
+      - hvis der står 151 som helt tal, så tag det som SV151
     """
     t = full_text_lower or ""
 
@@ -56,12 +54,8 @@ def _series_hint_from_queries(full_text_lower: str) -> str:
     if "mega evolution" in t or "mega evolutions" in t:
         return "Mega Evolution"
 
-    # SV151 (sikker, uden at være alt for aggressiv)
-    if ("sv 151" in t) or ("pokemon 151" in t) or ("scarlet & violet 151" in t) or ("scarlet and violet 151" in t):
-        return "Scarlet & Violet 151"
-
-    # SAFE fallback: pokemon + 151 (heltal)
-    if ("pokemon" in t) and re.search(r"\b151\b", t):
+    # SV151 (LØS)
+    if re.search(r"\b151\b", t):
         return "Scarlet & Violet 151"
 
     # Crown Zenith / Prismatic
@@ -119,7 +113,7 @@ def scan_shopify_store_json(domain: str, queries: list[str]) -> list[dict]:
             if not any(q in full_text_l for q in queries_l):
                 continue
 
-            # ---- Hårde udelukkelser ----
+            # Udeluk
             if any(word in title_l for word in banned_language_words):
                 continue
             if any(word in title_l for word in banned_graded_words):
@@ -127,15 +121,13 @@ def scan_shopify_store_json(domain: str, queries: list[str]) -> list[dict]:
             if looks_like_single_card(title_raw) or looks_like_single_card(full_text):
                 continue
 
-            # Kræv sealed (titel)
+            # Kræv sealed
             if not any(word in title_l for word in required_product_words):
                 continue
-            # ----------------------------
 
             # Hint + fallback detektion
             series_hint = _series_hint_from_queries(full_text_l)
             if series_hint == "Unknown Series":
-                # prøv ren serie-detektion på full_text (title+body+product_type)
                 series_hint = detect_series(full_text)
 
             for variant in product.get("variants", []):
@@ -157,7 +149,7 @@ def scan_shopify_store_json(domain: str, queries: list[str]) -> list[dict]:
                         "price": price,
                         "available": bool(variant.get("available", False)),
                         "series_hint": series_hint,
-                        "grouping_text": full_text,  # bruges i grouping hvis titel er uklar
+                        "grouping_text": full_text,
                     }
                 )
 
