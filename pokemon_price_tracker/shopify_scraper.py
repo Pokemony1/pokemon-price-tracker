@@ -3,6 +3,7 @@ import requests
 from pokemon_price_tracker.product_grouping import detect_series
 
 
+# -------- Singles (kort) indikatorer --------
 RARITY_WORDS = [
     "common", "uncommon", "rare", "double rare",
     "ultra rare", "secret rare", "illustration rare", "art rare",
@@ -20,7 +21,6 @@ SLASHY_CONDITION_RE = re.compile(r"\b(english|near mint|reverse|holo)\b.*\/", re
 
 def looks_like_single_card(title_or_text: str) -> bool:
     t = (title_or_text or "").lower()
-
     if CARD_NO_BRACKET_RE.search(t):
         return True
     if SLASHY_CONDITION_RE.search(t):
@@ -31,37 +31,61 @@ def looks_like_single_card(title_or_text: str) -> bool:
         return True
     if re.search(r"\((common|uncommon|rare)\)", t):
         return True
-
     return False
 
 
-def _series_hint_from_queries(full_text_lower: str) -> str:
+# alle de 151-queries vi betragter som “sikker 151”
+_151_QUERY_MARKERS = {
+    "151",
+    "pokemon 151",
+    "sv 151",
+    "sv: 151",
+    "sv-151",
+    "sv_151",
+    "sv151",
+    "s&v 151",
+    "s&v: 151",
+    "s&v-151",
+    "s&v151",
+    "s/v 151",
+    "scarlet & violet 151",
+    "scarlet and violet 151",
+    "scarlet violet 151",
+}
+
+
+def _series_hint_from_matches(full_text_lower: str, matched_queries: list[str]) -> str:
     """
-    LØS 151:
-      - hvis der står 151 som helt tal, så tag det som SV151
+    Mere “åben” serie-detektion:
+      - Hvis en 151-query matchede -> 151
+      - Ellers hvis teksten har 151 som helt tal -> 151
+      - Ellers de andre serier som før
     """
     t = full_text_lower or ""
+    mq = set((q or "").strip().lower() for q in matched_queries or [])
 
     # Mega Evolution sub-sets
-    if "ascended heroes" in t:
+    if "ascended heroes" in t or "ascended heroes" in mq:
         return "Mega Evolution - Ascended Heroes"
-    if "phantasmal flames" in t:
+    if "phantasmal flames" in t or "phantasmal flames" in mq:
         return "Mega Evolution - Phantasmal Flames"
-    if "perfect order" in t:
+    if "perfect order" in t or "perfect order" in mq:
         return "Mega Evolution - Perfect Order"
 
     # Mega Evolution generic
-    if "mega evolution" in t or "mega evolutions" in t:
+    if ("mega evolution" in t) or ("mega evolutions" in t) or ("mega evolution" in mq) or ("mega evolutions" in mq):
         return "Mega Evolution"
 
-    # SV151 (LØS)
+    # SV151 (åben)
+    if mq.intersection(_151_QUERY_MARKERS):
+        return "Scarlet & Violet 151"
     if re.search(r"\b151\b", t):
         return "Scarlet & Violet 151"
 
     # Crown Zenith / Prismatic
-    if "crown zenith" in t:
+    if "crown zenith" in t or "crown zenith" in mq:
         return "Crown Zenith"
-    if "prismatic evolution" in t or "prismatic evolutions" in t:
+    if ("prismatic evolution" in t) or ("prismatic evolutions" in t) or ("prismatic evolution" in mq) or ("prismatic evolutions" in mq):
         return "Prismatic Evolutions"
 
     return "Unknown Series"
@@ -109,8 +133,9 @@ def scan_shopify_store_json(domain: str, queries: list[str]) -> list[dict]:
             full_text_l = full_text.lower()
             title_l = title_raw.lower()
 
-            # Matcher queries?
-            if not any(q in full_text_l for q in queries_l):
+            # hvilke queries matchede?
+            matched = [q for q in queries_l if q and (q in full_text_l)]
+            if not matched:
                 continue
 
             # Udeluk
@@ -126,8 +151,9 @@ def scan_shopify_store_json(domain: str, queries: list[str]) -> list[dict]:
                 continue
 
             # Hint + fallback detektion
-            series_hint = _series_hint_from_queries(full_text_l)
+            series_hint = _series_hint_from_matches(full_text_l, matched)
             if series_hint == "Unknown Series":
+                # fallback: prøv serie på full_text (title+body+product_type)
                 series_hint = detect_series(full_text)
 
             for variant in product.get("variants", []):
@@ -150,6 +176,7 @@ def scan_shopify_store_json(domain: str, queries: list[str]) -> list[dict]:
                         "available": bool(variant.get("available", False)),
                         "series_hint": series_hint,
                         "grouping_text": full_text,
+                        "matched_queries": matched,
                     }
                 )
 

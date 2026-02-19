@@ -2,7 +2,7 @@ import re
 from typing import Optional, Tuple
 
 _ws_re = re.compile(r"\s+")
-_punct_re = re.compile(r"[^\w\s&x\-]+")
+_punct_re = re.compile(r"[^\w\s&x\-\/]+")
 
 
 def _clean(s: str) -> str:
@@ -15,22 +15,32 @@ def _clean(s: str) -> str:
 
 
 SERIES_PATTERNS = [
+    # Mega Evolution sub-sets
     ("Mega Evolution - Ascended Heroes", [r"\bascended heroes\b"]),
     ("Mega Evolution - Phantasmal Flames", [r"\bphantasmal flames\b"]),
     ("Mega Evolution - Perfect Order", [r"\bperfect order\b"]),
+
+    # Generic Mega Evolution
     ("Mega Evolution", [r"\bmega evolution(s)?\b"]),
+
+    # Crown Zenith
     ("Crown Zenith", [r"\bcrown zenith\b"]),
+
+    # Prismatic
     ("Prismatic Evolutions", [r"\bprismatic evolution(s)?\b"]),
 
-    # LØS 151: hvis teksten indeholder 151, så er det 151
+    # SV 151 (åbent, men stadig rimeligt)
     ("Scarlet & Violet 151", [
         r"\b151\b",
+        r"\bpokemon\s*151\b",
+        r"\bsv\s*:?[\s\-]*151\b",
+        r"\bsv151\b",
+        r"\bs\s*&\s*v\s*:?[\s\-]*151\b",
+        r"\bs&v\s*:?[\s\-]*151\b",
+        r"\bs\/v\s*151\b",
         r"\bscarlet\s*&\s*violet\s*:?\s*151\b",
         r"\bscarlet\s*and\s*violet\s*:?\s*151\b",
-        r"\bsv\s*:?\s*151\b",
-        r"\bsv151\b",
-        r"\bpokemon\s*151\b",
-        r"\bs\s*&\s*v\s*:?\s*151\b",
+        r"\bscarlet\s+violet\s*:?\s*151\b",
     ]),
 ]
 
