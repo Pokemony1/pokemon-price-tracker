@@ -33,12 +33,14 @@ SERIES_PATTERNS = [
     # Prismatic
     ("Prismatic Evolutions", [r"\bprismatic evolution(s)?\b"]),
 
-    # SV 151 (flere stavemåder)
+    # SV 151 (mere præcis: kræver pokemon+151 eller kendte fraser)
     ("Scarlet & Violet 151", [
+        r"\bpokemon\b.*\b151\b",
+        r"\b151\b.*\bpokemon\b",
         r"\bscarlet\s*&\s*violet\s*:?\s*151\b",
         r"\bscarlet\s*and\s*violet\s*:?\s*151\b",
         r"\bscarlet\s+violet\s*:?\s*151\b",
-        r"\bsv\s*151\b",
+        r"\bsv\s*:?\s*151\b",
         r"\bpokemon\s*151\b",
     ]),
 ]
@@ -118,12 +120,10 @@ def build_group_key_and_name(
     series_hint: Optional[str] = None,
 ) -> Tuple[str, str]:
     """
-    Forbedret:
-      - Bruger series_hint hvis den findes
-      - Ellers prøver vi først på titlen, og hvis Unknown → prøver vi extra_text (body/product_type)
+    - Bruger series_hint hvis det findes og ikke er Unknown
+    - Ellers prøver vi titlen
+    - Hvis stadig Unknown og extra_text findes: prøver vi extra_text (body/product_type)
     """
-    series = "Unknown Series"
-
     if series_hint and series_hint != "Unknown Series":
         series = series_hint
     else:
@@ -136,5 +136,4 @@ def build_group_key_and_name(
 
     key = f"{series}|{ptype}|{count_tag or ''}"
     canonical = f"{series}: {ptype}" + (f" ({count_tag})" if count_tag else "")
-
     return key, canonical

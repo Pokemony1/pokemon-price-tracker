@@ -2,6 +2,7 @@ import re
 import requests
 from pokemon_price_tracker.product_grouping import detect_series
 
+
 # -------- Singles (kort) indikatorer --------
 RARITY_WORDS = [
     "common", "uncommon", "rare", "double rare",
@@ -35,13 +36,13 @@ def looks_like_single_card(title_or_text: str) -> bool:
     return False
 
 
-def _series_hint_from_queries(full_text: str) -> str:
+def _series_hint_from_queries(full_text_lower: str) -> str:
     """
-    Option 2:
-    Hvis query-match tydeligt peger på en serie, så brug det som hint,
-    selv hvis titlen ikke indeholder serienavnet.
+    "Hint" baseret på hvad teksten indeholder.
+    Nu inkluderer vi en sikker 151-fallback:
+      - kun hvis 'pokemon' findes OG der står 151 som et helt tal
     """
-    t = (full_text or "").lower()
+    t = full_text_lower or ""
 
     # Mega Evolution sub-sets
     if "ascended heroes" in t:
@@ -55,8 +56,12 @@ def _series_hint_from_queries(full_text: str) -> str:
     if "mega evolution" in t or "mega evolutions" in t:
         return "Mega Evolution"
 
-    # SV151 (undgå at bruge bare "151" som hint – for risikabelt)
+    # SV151 (sikker, uden at være alt for aggressiv)
     if ("sv 151" in t) or ("pokemon 151" in t) or ("scarlet & violet 151" in t) or ("scarlet and violet 151" in t):
+        return "Scarlet & Violet 151"
+
+    # SAFE fallback: pokemon + 151 (heltal)
+    if ("pokemon" in t) and re.search(r"\b151\b", t):
         return "Scarlet & Violet 151"
 
     # Crown Zenith / Prismatic
@@ -106,7 +111,7 @@ def scan_shopify_store_json(domain: str, queries: list[str]) -> list[dict]:
             body_raw = (product.get("body_html") or "")
             ptype_raw = (product.get("product_type") or "")
 
-            full_text = (title_raw + " " + body_raw + " " + ptype_raw)
+            full_text = f"{title_raw} {body_raw} {ptype_raw}"
             full_text_l = full_text.lower()
             title_l = title_raw.lower()
 
@@ -127,11 +132,10 @@ def scan_shopify_store_json(domain: str, queries: list[str]) -> list[dict]:
                 continue
             # ----------------------------
 
-            # Option 1 + 2:
-            # - series_hint fra query-match (robust)
-            # - hvis stadig Unknown → prøv at detektere ud fra full_text (inkl body/product_type)
+            # Hint + fallback detektion
             series_hint = _series_hint_from_queries(full_text_l)
             if series_hint == "Unknown Series":
+                # prøv ren serie-detektion på full_text (title+body+product_type)
                 series_hint = detect_series(full_text)
 
             for variant in product.get("variants", []):
@@ -152,9 +156,8 @@ def scan_shopify_store_json(domain: str, queries: list[str]) -> list[dict]:
                         "name": full_name,
                         "price": price,
                         "available": bool(variant.get("available", False)),
-                        # bruges til bedre serie-detektion i grouping:
                         "series_hint": series_hint,
-                        "grouping_text": full_text,  # title + body_html + product_type
+                        "grouping_text": full_text,  # bruges i grouping hvis titel er uklar
                     }
                 )
 
