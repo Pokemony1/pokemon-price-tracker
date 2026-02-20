@@ -10,3 +10,6 @@ __pycache__/
 service_account.json
 .env
 .DS_Store
+# --- ChatGPT export bundle (må ikke i repo) ---
+/CHATGPT_BUNDLE_*.txt
+CHATGPT_BUNDLE_*.txt
