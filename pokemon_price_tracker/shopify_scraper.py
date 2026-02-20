@@ -34,7 +34,7 @@ def looks_like_single_card(title_or_text: str) -> bool:
     return False
 
 
-# alle de 151-queries vi betragter som “sikker 151”
+# 151-queries vi betragter som “sikker 151”
 _151_QUERY_MARKERS = {
     "151",
     "pokemon 151",
@@ -55,12 +55,6 @@ _151_QUERY_MARKERS = {
 
 
 def _series_hint_from_matches(full_text_lower: str, matched_queries: list[str]) -> str:
-    """
-    Mere “åben” serie-detektion:
-      - Hvis en 151-query matchede -> 151
-      - Ellers hvis teksten har 151 som helt tal -> 151
-      - Ellers de andre serier som før
-    """
     t = full_text_lower or ""
     mq = set((q or "").strip().lower() for q in matched_queries or [])
 
@@ -76,7 +70,7 @@ def _series_hint_from_matches(full_text_lower: str, matched_queries: list[str]) 
     if ("mega evolution" in t) or ("mega evolutions" in t) or ("mega evolution" in mq) or ("mega evolutions" in mq):
         return "Mega Evolution"
 
-    # SV151 (åben)
+    # SV151 (åbent)
     if mq.intersection(_151_QUERY_MARKERS):
         return "Scarlet & Violet 151"
     if re.search(r"\b151\b", t):
@@ -128,6 +122,7 @@ def scan_shopify_store_json(domain: str, queries: list[str]) -> list[dict]:
             title_raw = (product.get("title") or "")
             body_raw = (product.get("body_html") or "")
             ptype_raw = (product.get("product_type") or "")
+            handle = (product.get("handle") or "").strip()
 
             full_text = f"{title_raw} {body_raw} {ptype_raw}"
             full_text_l = full_text.lower()
@@ -153,8 +148,12 @@ def scan_shopify_store_json(domain: str, queries: list[str]) -> list[dict]:
             # Hint + fallback detektion
             series_hint = _series_hint_from_matches(full_text_l, matched)
             if series_hint == "Unknown Series":
-                # fallback: prøv serie på full_text (title+body+product_type)
                 series_hint = detect_series(full_text)
+
+            # base URL til produkt (variant tilføjes pr variant)
+            base_product_url = ""
+            if handle:
+                base_product_url = f"https://{domain}/products/{handle}"
 
             for variant in product.get("variants", []):
                 try:
@@ -169,6 +168,11 @@ def scan_shopify_store_json(domain: str, queries: list[str]) -> list[dict]:
                 if looks_like_single_card(full_name):
                     continue
 
+                variant_id = variant.get("id")
+                variant_url = base_product_url
+                if base_product_url and variant_id:
+                    variant_url = f"{base_product_url}?variant={variant_id}"
+
                 products.append(
                     {
                         "name": full_name,
@@ -177,6 +181,7 @@ def scan_shopify_store_json(domain: str, queries: list[str]) -> list[dict]:
                         "series_hint": series_hint,
                         "grouping_text": full_text,
                         "matched_queries": matched,
+                        "url": variant_url,  # ✅ NYT: direkte link
                     }
                 )
 

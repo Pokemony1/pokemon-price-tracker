@@ -10,6 +10,7 @@ from pokemon_price_tracker.push_notification import send_push
 from pokemon_price_tracker.product_grouping import build_group_key_and_name
 
 
+# ----------------- KONFIG -----------------
 SHEET_SUMMARY_TITLE = "Sheet1"
 SHEET_IN_STOCK_TITLE = "Billigste in stock"
 SHEET_RAW_TITLE = "RawOffers"
@@ -17,6 +18,7 @@ SHEET_RAW_TITLE = "RawOffers"
 MIN_HISTORY_FOR_PUSH = 5
 DISCOUNT_PCT = 0.15
 MAX_PUSH_LINES = 20
+# ------------------------------------------
 
 
 def load_shops():
@@ -37,6 +39,19 @@ def parse_float(x):
         return float(x)
     except Exception:
         return None
+
+
+def make_shop_cell(shop_label: str, url: str) -> str:
+    """
+    Returner en klikbar HYPERLINK-formel hvis url findes,
+    ellers bare shop_label.
+    """
+    if not url:
+        return str(shop_label)
+
+    safe_url = str(url).replace('"', "%22")
+    safe_text = str(shop_label).replace('"', "'") or "link"
+    return f'=HYPERLINK("{safe_url}","{safe_text}")'
 
 
 def ensure_headers(ws, today_str):
@@ -77,10 +92,11 @@ def ensure_headers(ws, today_str):
 
 
 def ensure_raw_headers(raw_ws):
-    wanted = ["Timestamp", "Date", "Product", "Price", "Shop", "Available"]
+    # ✅ NYT: URL-kolonne i RawOffers
+    wanted = ["Timestamp", "Date", "Product", "Price", "Shop", "URL", "Available"]
     header = raw_ws.row_values(1)
     if header != wanted:
-        raw_ws.update("A1:F1", [wanted])
+        raw_ws.update("A1:G1", [wanted])
 
 
 def append_raw_offers(raw_ws, today_str, offers_by_group, group_name_map):
@@ -88,8 +104,16 @@ def append_raw_offers(raw_ws, today_str, offers_by_group, group_name_map):
     rows = []
     for gkey, offers in offers_by_group.items():
         canonical_name = group_name_map.get(gkey, gkey)
-        for price, shop, available in offers:
-            rows.append([now_ts, today_str, canonical_name, str(price), shop, "TRUE" if available else "FALSE"])
+        for price, shop, available, url in offers:
+            rows.append([
+                now_ts,
+                today_str,
+                canonical_name,
+                str(price),
+                shop,
+                url or "",
+                "TRUE" if available else "FALSE",
+            ])
 
     if rows:
         raw_ws.append_rows(rows, value_input_option="USER_ENTERED")
@@ -105,6 +129,7 @@ def get_product_row_map(ws):
 
 
 def choose_cheapest_overall(offers):
+    # offers: (price, shop, available, url)
     avail_offers = [o for o in offers if o[2] is True]
     use = avail_offers if avail_offers else offers
     return min(use, key=lambda t: t[0])
@@ -149,13 +174,17 @@ def update_price_sheet(ws, today_str, chosen_today, do_sort_alpha=True):
     updates_count = 0
     push_candidates = []
 
-    for name, (price, shop_label, available) in chosen_today.items():
+    for name, offer in chosen_today.items():
+        price, shop_label, available, url = offer
         r = row_map.get(name)
         if not r:
             continue
 
         all_values[r - 1][today_price_col - 1] = str(price)
-        all_values[r - 1][today_shop_col - 1] = str(shop_label)
+
+        # ✅ NYT: Shop cell bliver klikbart link
+        all_values[r - 1][today_shop_col - 1] = make_shop_cell(shop_label, url)
+
         all_values[r - 1][today_stock_col - 1] = "IN_STOCK" if available else "OUT_OF_STOCK"
 
         hist_prices = []
@@ -178,7 +207,8 @@ def update_price_sheet(ws, today_str, chosen_today, do_sort_alpha=True):
         push_candidates.append((name, float(price), shop_label, float(median_price), len(hist_prices)))
 
     range_name = f"A1:{gspread.utils.rowcol_to_a1(max_row, max_col)}"
-    ws.update(values=all_values[:max_row], range_name=range_name)
+    # ✅ vigtigt: USER_ENTERED så HYPERLINK-formler virker
+    ws.update(range_name=range_name, values=all_values[:max_row], value_input_option="USER_ENTERED")
 
     if do_sort_alpha:
         try:
@@ -244,8 +274,8 @@ def main():
 
             available = bool(p.get("available", True))
             real_shop = (p.get("shop_source") or shop_label)
+            url = (p.get("url") or "").strip()
 
-            # NYT: brug hints + full_text (grouping_text)
             group_key, canonical_name = build_group_key_and_name(
                 raw_name,
                 extra_text=p.get("grouping_text"),
@@ -253,7 +283,7 @@ def main():
             )
 
             group_name_map[group_key] = canonical_name
-            offers_by_group.setdefault(group_key, []).append((price, real_shop, available))
+            offers_by_group.setdefault(group_key, []).append((price, real_shop, available, url))
 
     print("TOTAL grupper fundet:", len(offers_by_group))
 
