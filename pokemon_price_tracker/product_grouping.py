@@ -15,21 +15,12 @@ def _clean(s: str) -> str:
 
 
 SERIES_PATTERNS = [
-    # Mega Evolution sub-sets
     ("Mega Evolution - Ascended Heroes", [r"\bascended heroes\b"]),
     ("Mega Evolution - Phantasmal Flames", [r"\bphantasmal flames\b"]),
     ("Mega Evolution - Perfect Order", [r"\bperfect order\b"]),
-
-    # Generic Mega Evolution
     ("Mega Evolution", [r"\bmega evolution(s)?\b"]),
-
-    # Crown Zenith
     ("Crown Zenith", [r"\bcrown zenith\b"]),
-
-    # Prismatic
     ("Prismatic Evolutions", [r"\bprismatic evolution(s)?\b"]),
-
-    # SV 151 (åbent, men stadig rimeligt)
     ("Scarlet & Violet 151", [
         r"\b151\b",
         r"\bpokemon\s*151\b",
@@ -113,6 +104,50 @@ def detect_type(title: str) -> str:
     return "Sealed Product"
 
 
+THEME_STOPWORDS = {
+    "pokemon", "center", "plus", "elite", "trainer", "box", "etb",
+    "english", "sealed", "preorder", "pre-order", "pre", "order",
+    "edition", "limited", "new", "promo",
+}
+
+
+def detect_theme(title: str, ptype: str) -> Optional[str]:
+    """
+    Prøver at udtrække 'tema' fra ETB-titler.
+    Fx: "... ETB Glaceon" / "... Elite Trainer Box - Bulbasaur" / "... ETB (Glaceon)"
+    """
+    if "ETB" not in (ptype or "") and "Elite Trainer Box" not in (ptype or ""):
+        return None
+
+    t = _clean(title)
+
+    # Efter "etb" eller "elite trainer box"
+    m = re.search(r"\b(elite trainer box|etb)\b\s*[:\-]?\s*(.+)$", t)
+    cand = None
+    if m:
+        cand = m.group(2)
+    else:
+        # Parentheser: "... ETB (Glaceon)"
+        m2 = re.search(r"\b(etb|elite trainer box)\b.*\(([^)]+)\)", t)
+        if m2:
+            cand = m2.group(2)
+
+    if not cand:
+        return None
+
+    tokens = [x for x in re.split(r"\s+", cand.strip()) if x]
+    for tok in tokens:
+        if tok.isdigit():
+            continue
+        if tok in THEME_STOPWORDS:
+            continue
+        if len(tok) < 3:
+            continue
+        return tok.replace("-", " ").title()
+
+    return None
+
+
 def build_group_key_and_name(
     product_title: str,
     extra_text: Optional[str] = None,
@@ -127,7 +162,21 @@ def build_group_key_and_name(
 
     ptype = detect_type(product_title)
     count_tag = detect_count_tag(product_title)
+    theme = detect_theme(product_title, ptype)
 
-    key = f"{series}|{ptype}|{count_tag or ''}"
-    canonical = f"{series}: {ptype}" + (f" ({count_tag})" if count_tag else "")
+    canonical = f"{series}: {ptype}"
+    if count_tag:
+        canonical += f" ({count_tag})"
+    if theme:
+        canonical += f" - {theme}"
+
+    # Key: series + type + count + theme (så themes ikke blandes)
+    key_parts = [
+        _clean(series),
+        _clean(ptype),
+        _clean(count_tag or ""),
+        _clean(theme or ""),
+    ]
+    key = "|".join(key_parts)
+
     return key, canonical

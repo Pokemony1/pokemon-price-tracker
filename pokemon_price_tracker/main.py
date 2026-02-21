@@ -1,8 +1,10 @@
 import os
 import datetime
-import numpy as np
+import statistics
 import importlib
 import pkgutil
+from typing import Optional, Dict, Tuple, List
+
 import gspread
 
 from pokemon_price_tracker.google_sheet import connect_google_sheet
@@ -18,6 +20,8 @@ SHEET_RAW_TITLE = "RawOffers"
 MIN_HISTORY_FOR_PUSH = 5
 DISCOUNT_PCT = 0.15
 MAX_PUSH_LINES = 20
+
+SNAPSHOT_HEADERS = ["Product", "Median", "Price", "Prev Price", "Δ", "Δ%", "Shop", "Stock", "Updated"]
 # ------------------------------------------
 
 
@@ -34,7 +38,7 @@ def load_shops():
     return shops
 
 
-def parse_float(x):
+def parse_float(x) -> Optional[float]:
     try:
         return float(x)
     except Exception:
@@ -54,52 +58,14 @@ def make_shop_cell(shop_label: str, url: str) -> str:
     return f'=HYPERLINK("{safe_url}","{safe_text}")'
 
 
-def ensure_headers(ws, today_str):
-    header = ws.row_values(1)
-
-    if len(header) < 1 or header[0] != "Product":
-        ws.update_cell(1, 1, "Product")
-    if len(header) < 2 or header[1] != "Median":
-        ws.update_cell(1, 2, "Median")
-
-    header = ws.row_values(1)
-
-    price_header = f"{today_str} Price"
-    shop_header = f"{today_str} Shop"
-    stock_header = f"{today_str} Stock"
-
-    if price_header in header:
-        price_col = header.index(price_header) + 1
-        shop_col = price_col + 1
-        stock_col = price_col + 2
-
-        if len(header) < shop_col or header[shop_col - 1] != shop_header:
-            ws.update_cell(1, shop_col, shop_header)
-        if len(header) < stock_col or header[stock_col - 1] != stock_header:
-            ws.update_cell(1, stock_col, stock_header)
-
-        return price_col, shop_col, stock_col
-
-    price_col = len(header) + 1
-    shop_col = price_col + 1
-    stock_col = price_col + 2
-
-    ws.update_cell(1, price_col, price_header)
-    ws.update_cell(1, shop_col, shop_header)
-    ws.update_cell(1, stock_col, stock_header)
-
-    return price_col, shop_col, stock_col
-
-
 def ensure_raw_headers(raw_ws):
-    # ✅ NYT: URL-kolonne i RawOffers
     wanted = ["Timestamp", "Date", "Product", "Price", "Shop", "URL", "Available"]
     header = raw_ws.row_values(1)
     if header != wanted:
         raw_ws.update("A1:G1", [wanted])
 
 
-def append_raw_offers(raw_ws, today_str, offers_by_group, group_name_map):
+def append_raw_offers(raw_ws, today_str: str, offers_by_group: Dict[str, list], group_name_map: Dict[str, str]):
     now_ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     rows = []
     for gkey, offers in offers_by_group.items():
@@ -119,107 +85,252 @@ def append_raw_offers(raw_ws, today_str, offers_by_group, group_name_map):
         raw_ws.append_rows(rows, value_input_option="USER_ENTERED")
 
 
-def get_product_row_map(ws):
-    col = ws.col_values(1)
-    mapping = {}
-    for idx, name in enumerate(col[1:], start=2):
-        if name:
-            mapping[name] = idx
-    return mapping
+def _bool_from_raw(s: str) -> bool:
+    s = (s or "").strip().upper()
+    return s in ("TRUE", "1", "YES", "IN_STOCK")
 
 
-def choose_cheapest_overall(offers):
-    # offers: (price, shop, available, url)
-    avail_offers = [o for o in offers if o[2] is True]
-    use = avail_offers if avail_offers else offers
-    return min(use, key=lambda t: t[0])
+# ----------------- VÆLG BILLIGSTE -----------------
+def choose_cheapest_overall(offers: List[Tuple[float, str, bool, str]]):
+    # 100% billigste uanset lager
+    return min(offers, key=lambda t: t[0])
 
 
-def choose_cheapest_in_stock_else_fallback(offers):
-    sorted_offers = sorted(offers, key=lambda t: t[0])
-    for o in sorted_offers:
-        if o[2] is True:
-            return o
-    return sorted_offers[0]
+def choose_cheapest_in_stock(offers: List[Tuple[float, str, bool, str]]):
+    # Kun in-stock. Returnér None hvis intet er på lager (så produktet ikke kommer med).
+    in_stock = [o for o in offers if o[2] is True]
+    if not in_stock:
+        return None
+    return min(in_stock, key=lambda t: t[0])
 
 
-def update_price_sheet(ws, today_str, chosen_today, do_sort_alpha=True):
-    today_price_col, today_shop_col, today_stock_col = ensure_headers(ws, today_str)
+# ----------------- SNAPSHOT HELPERS -----------------
+def get_prev_price_map(ws) -> Dict[str, float]:
+    """
+    Læs forrige snapshot (kolonne A=Product, C=Price).
+    Hvis arket stadig er i gammelt "dato-kolonne"-format, returnér {}.
+    """
+    values = ws.get_all_values()
+    if not values or len(values) < 2:
+        return {}
 
-    row_map = get_product_row_map(ws)
-    all_names = list(chosen_today.keys())
+    header = values[0]
+    if len(header) < 3:
+        return {}
 
-    new_names = [n for n in all_names if n not in row_map]
-    if new_names:
-        ws.append_rows([[n] for n in new_names], value_input_option="USER_ENTERED")
-        row_map = get_product_row_map(ws)
+    if header[0].strip().lower() != "product" or header[2].strip().lower() != "price":
+        return {}
 
-    all_values = ws.get_all_values()
-    max_row = max(row_map.values()) if row_map else 1
-    max_col = max(today_stock_col, 2)
+    out: Dict[str, float] = {}
+    for row in values[1:]:
+        if len(row) < 3:
+            continue
+        name = (row[0] or "").strip()
+        if not name:
+            continue
+        p = parse_float(row[2])
+        if p is None:
+            continue
+        out[name] = float(p)
+    return out
 
-    while len(all_values) < max_row:
-        all_values.append([])
-    for r_i in range(len(all_values)):
-        if len(all_values[r_i]) < max_col:
-            all_values[r_i].extend([""] * (max_col - len(all_values[r_i])))
 
-    header = all_values[0] if all_values else []
+def build_daily_medians_from_raw(raw_ws, mode: str) -> Tuple[Dict[str, float], Dict[str, int]]:
+    """
+    mode = "overall"  -> daily min uanset lager
+    mode = "in_stock" -> daily min kun Available=TRUE
+    Median = median af daily minima (1 tal pr dag).
+    hist_days = antal dage med data.
+    """
+    values = raw_ws.get_all_values()
+    if not values or len(values) < 2:
+        return {}, {}
 
-    price_cols = []
-    for c in range(3, len(header) + 1, 3):
-        if header[c - 1].endswith(" Price"):
-            price_cols.append(c)
+    header = values[0]
+    idx = {h.strip(): i for i, h in enumerate(header)}
 
-    updates_count = 0
-    push_candidates = []
+    needed = {"Date", "Product", "Price", "Available"}
+    if not needed.issubset(idx):
+        return {}, {}
 
-    for name, offer in chosen_today.items():
-        price, shop_label, available, url = offer
-        r = row_map.get(name)
-        if not r:
+    daily_min: Dict[Tuple[str, str], float] = {}
+
+    for row in values[1:]:
+        try:
+            date = (row[idx["Date"]] or "").strip()
+            product = (row[idx["Product"]] or "").strip()
+            price = parse_float(row[idx["Price"]] if idx["Price"] < len(row) else "")
+            available = _bool_from_raw(row[idx["Available"]] if idx["Available"] < len(row) else "")
+        except Exception:
             continue
 
-        all_values[r - 1][today_price_col - 1] = str(price)
+        if not date or not product or price is None:
+            continue
 
-        # ✅ NYT: Shop cell bliver klikbart link
-        all_values[r - 1][today_shop_col - 1] = make_shop_cell(shop_label, url)
+        if mode == "in_stock" and not available:
+            continue
 
-        all_values[r - 1][today_stock_col - 1] = "IN_STOCK" if available else "OUT_OF_STOCK"
+        key = (product, date)
+        fp = float(price)
+        if key not in daily_min or fp < daily_min[key]:
+            daily_min[key] = fp
 
-        hist_prices = []
-        for c in price_cols:
-            if c == today_price_col:
-                continue
-            v = all_values[r - 1][c - 1] if (c - 1) < len(all_values[r - 1]) else ""
-            try:
-                fv = float(v) if v != "" else None
-            except Exception:
-                fv = None
-            if fv is not None:
-                hist_prices.append(fv)
+    by_product: Dict[str, List[float]] = {}
+    for (product, _date), p in daily_min.items():
+        by_product.setdefault(product, []).append(p)
 
-        prices_for_median = hist_prices + [float(price)]
-        median_price = float(np.median(prices_for_median)) if prices_for_median else float(price)
+    median_map: Dict[str, float] = {}
+    hist_days_map: Dict[str, int] = {}
+    for product, prices in by_product.items():
+        median_map[product] = float(statistics.median(prices))
+        hist_days_map[product] = len(prices)
 
-        all_values[r - 1][1] = f"{median_price:.6g}"
-        updates_count += 1
-        push_candidates.append((name, float(price), shop_label, float(median_price), len(hist_prices)))
+    return median_map, hist_days_map
 
-    range_name = f"A1:{gspread.utils.rowcol_to_a1(max_row, max_col)}"
-    # ✅ vigtigt: USER_ENTERED så HYPERLINK-formler virker
-    ws.update(range_name=range_name, values=all_values[:max_row], value_input_option="USER_ENTERED")
 
-    if do_sort_alpha:
-        try:
-            ws.sort((1, "asc"), range=f"A2:{gspread.utils.rowcol_to_a1(max_row, max_col)}")
-        except Exception:
-            pass
+def _apply_snapshot_formatting(ws, delta_col_index_1based: int = 5):
+    """
+    - Freeze header
+    - Bold header
+    - Conditional formatting på Δ:
+        grøn (<0), gul (=0), rød (>0)
+    """
+    try:
+        sh = ws.spreadsheet
+        sheet_id = ws._properties["sheetId"]
+
+        meta = sh.fetch_sheet_metadata()
+        conditional_rules = []
+        for s in meta.get("sheets", []):
+            props = s.get("properties", {})
+            if props.get("sheetId") == sheet_id:
+                conditional_rules = s.get("conditionalFormatRules", []) or []
+                break
+
+        requests = []
+
+        # Freeze 1. række
+        requests.append({
+            "updateSheetProperties": {
+                "properties": {
+                    "sheetId": sheet_id,
+                    "gridProperties": {"frozenRowCount": 1},
+                },
+                "fields": "gridProperties.frozenRowCount",
+            }
+        })
+
+        # Bold header
+        requests.append({
+            "repeatCell": {
+                "range": {"sheetId": sheet_id, "startRowIndex": 0, "endRowIndex": 1},
+                "cell": {"userEnteredFormat": {"textFormat": {"bold": True}}},
+                "fields": "userEnteredFormat.textFormat.bold",
+            }
+        })
+
+        # Slet gamle conditional rules (så vi ikke stapler nye på hver dag)
+        for i in range(len(conditional_rules) - 1, -1, -1):
+            requests.append({"deleteConditionalFormatRule": {"sheetId": sheet_id, "index": i}})
+
+        # Range: Δ-kolonnen (E) fra række 2 og ned
+        start_col = delta_col_index_1based - 1
+        rng = {
+            "sheetId": sheet_id,
+            "startRowIndex": 1,  # skip header
+            "startColumnIndex": start_col,
+            "endColumnIndex": start_col + 1,
+        }
+
+        def add_rule(cond_type: str, value: str, rgb: Tuple[float, float, float]):
+            r, g, b = rgb
+            requests.append({
+                "addConditionalFormatRule": {
+                    "rule": {
+                        "ranges": [rng],
+                        "booleanRule": {
+                            "condition": {
+                                "type": cond_type,
+                                "values": [{"userEnteredValue": value}],
+                            },
+                            "format": {
+                                "backgroundColor": {"red": r, "green": g, "blue": b}
+                            },
+                        },
+                    },
+                    "index": 0,
+                }
+            })
+
+        # Grøn: fald
+        add_rule("NUMBER_LESS", "0", (0.80, 0.94, 0.80))
+        # Gul: uændret
+        add_rule("NUMBER_EQ", "0", (1.00, 0.96, 0.70))
+        # Rød: steget
+        add_rule("NUMBER_GREATER", "0", (0.98, 0.80, 0.80))
+
+        sh.batch_update({"requests": requests})
+    except Exception:
+        # Hvis formatting fejler, skal scriptet stadig virke
+        pass
+
+
+def update_snapshot_sheet(
+    ws,
+    chosen_today: Dict[str, Tuple[float, str, bool, str]],
+    prev_price_map: Dict[str, float],
+    median_map: Dict[str, float],
+    hist_days_map: Dict[str, int],
+    updated_ts: str,
+    sheet_kind: str,
+):
+    rows = []
+    push_candidates = []
+
+    for name in sorted(chosen_today.keys()):
+        offer = chosen_today[name]
+        if offer is None:
+            continue
+
+        price, shop_label, available, url = offer
+        price = float(price)
+
+        prev = prev_price_map.get(name)
+        delta = (price - prev) if prev is not None else ""
+        delta_pct = ((price - prev) / prev) if (prev is not None and prev != 0) else ""
+
+        median = float(median_map.get(name, price))
+        hist_days = int(hist_days_map.get(name, 0))
+
+        rows.append([
+            name,
+            f"{median:.6g}",
+            price,
+            (prev if prev is not None else ""),
+            delta,
+            delta_pct,
+            make_shop_cell(shop_label, url),
+            ("IN_STOCK" if available else "OUT_OF_STOCK"),
+            updated_ts,
+        ])
+
+        if sheet_kind == "in_stock" and available:
+            push_candidates.append((name, price, shop_label, median, hist_days))
+
+    ws.clear()
+    ws.resize(rows=max(1000, len(rows) + 50), cols=len(SNAPSHOT_HEADERS))
+    ws.update("A1", [SNAPSHOT_HEADERS] + rows, value_input_option="USER_ENTERED")
+
+    _apply_snapshot_formatting(ws, delta_col_index_1based=5)
+
+    # Sortér alfabetisk på Product (kolonne A)
+    try:
+        ws.sort((1, "asc"), range=f"A2:I{len(rows) + 1}")
+    except Exception:
+        pass
 
     return {
-        "max_row": max_row,
-        "max_col": max_col,
-        "updates_count": updates_count,
+        "updates_count": len(rows),
         "push_candidates": push_candidates,
     }
 
@@ -227,8 +338,10 @@ def update_price_sheet(ws, today_str, chosen_today, do_sort_alpha=True):
 def main():
     print("STARTER SCRIPT")
 
-    push_user_key = os.getenv("PUSH_USER_KEY", "")
-    push_app_token = os.getenv("PUSH_APP_TOKEN", "")
+    push_user_key = os.getenv("PUSH_USER_KEY", "").strip()
+    push_app_token = os.getenv("PUSH_APP_TOKEN", "").strip()
+
+    # behold din dag-streng (du bruger den allerede i RawOffers)
     today_str = datetime.datetime.now().strftime("%d-%m-%Y")
 
     sh = connect_google_sheet()
@@ -242,7 +355,7 @@ def main():
     try:
         ws_instock = sh.worksheet(SHEET_IN_STOCK_TITLE)
     except Exception:
-        ws_instock = sh.add_worksheet(title=SHEET_IN_STOCK_TITLE, rows=5000, cols=50)
+        ws_instock = sh.add_worksheet(title=SHEET_IN_STOCK_TITLE, rows=5000, cols=20)
 
     try:
         ws_raw = sh.worksheet(SHEET_RAW_TITLE)
@@ -252,8 +365,8 @@ def main():
     shops = load_shops()
     print("Shops loaded:", [s[0] for s in shops])
 
-    offers_by_group = {}
-    group_name_map = {}
+    offers_by_group: Dict[str, list] = {}
+    group_name_map: Dict[str, str] = {}
 
     for shop_label, shop_module in shops:
         try:
@@ -283,31 +396,64 @@ def main():
             )
 
             group_name_map[group_key] = canonical_name
-            offers_by_group.setdefault(group_key, []).append((price, real_shop, available, url))
+            offers_by_group.setdefault(group_key, []).append((float(price), real_shop, available, url))
 
     print("TOTAL grupper fundet:", len(offers_by_group))
 
+    # Raw history (append)
     ensure_raw_headers(ws_raw)
     append_raw_offers(ws_raw, today_str, offers_by_group, group_name_map)
     print("RAW OFFERS appended")
 
-    chosen_summary = {}
-    chosen_instock = {}
+    # Vælg billigste pr gruppe
+    chosen_summary: Dict[str, Tuple[float, str, bool, str]] = {}
+    chosen_instock: Dict[str, Tuple[float, str, bool, str]] = {}
 
     for gkey, offers in offers_by_group.items():
         canonical_name = group_name_map.get(gkey, gkey)
-        chosen_summary[canonical_name] = choose_cheapest_overall(offers)
-        chosen_instock[canonical_name] = choose_cheapest_in_stock_else_fallback(offers)
 
-    info_summary = update_price_sheet(ws_summary, today_str, chosen_summary, do_sort_alpha=True)
+        chosen_summary[canonical_name] = choose_cheapest_overall(offers)
+
+        best_instock = choose_cheapest_in_stock(offers)
+        if best_instock is not None:
+            chosen_instock[canonical_name] = best_instock
+
+    # Medianer fra RawOffers (daily minima)
+    median_overall, hist_days_overall = build_daily_medians_from_raw(ws_raw, mode="overall")
+    median_instock, hist_days_instock = build_daily_medians_from_raw(ws_raw, mode="in_stock")
+
+    # Pris i går fra snapshot-ark (nyt format)
+    prev_summary = get_prev_price_map(ws_summary)
+    prev_instock = get_prev_price_map(ws_instock)
+
+    now_ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    info_summary = update_snapshot_sheet(
+        ws_summary,
+        chosen_summary,
+        prev_summary,
+        median_overall,
+        hist_days_overall,
+        now_ts,
+        sheet_kind="overall",
+    )
     print(f"SUMMARY updated rows: {info_summary['updates_count']}")
 
-    info_instock = update_price_sheet(ws_instock, today_str, chosen_instock, do_sort_alpha=True)
+    info_instock = update_snapshot_sheet(
+        ws_instock,
+        chosen_instock,
+        prev_instock,
+        median_instock,
+        hist_days_instock,
+        now_ts,
+        sheet_kind="in_stock",
+    )
     print(f"IN_STOCK updated rows: {info_instock['updates_count']}")
 
+    # Push (kun in-stock ark)
     push_messages = []
-    for (name, price, shop, median, hist_count) in info_instock["push_candidates"]:
-        if hist_count >= MIN_HISTORY_FOR_PUSH:
+    for (name, price, shop, median, hist_days) in info_instock["push_candidates"]:
+        if hist_days >= MIN_HISTORY_FOR_PUSH:
             threshold = median * (1 - DISCOUNT_PCT)
             if price <= threshold:
                 push_messages.append(
