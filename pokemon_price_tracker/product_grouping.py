@@ -22,16 +22,20 @@ SERIES_PATTERNS = [
     ("Mega Evolution", [r"\bmega evolution(s)?\b"]),
     ("Crown Zenith", [r"\bcrown zenith\b"]),
     ("Prismatic Evolutions", [r"\bprismatic evolution(s)?\b"]),
+
+    # Scarlet & Violet 151
+    # VIGTIGT: Vi matcher IKKE bare "151" alene, ellers ryger alt med tallet 151 med.
     ("Scarlet & Violet 151", [
-        r"\b151\b",
-        r"\bpokemon\s*151\b",
-        r"\bsv\s*:?[\s\-]*151\b",
+        r"\b(pokemon|pok[eé]mon)\b.*\b151\b",
+        r"\b151\b.*\b(pokemon|pok[eé]mon)\b",
+        r"\b(pokemon|pok[eé]mon)\s*151\b",
+        r"\bsv\s*:?[\s\-_]*151\b",
         r"\bsv151\b",
         r"\bscarlet\s*&\s*violet\s*:?\s*151\b",
         r"\bscarlet\s*and\s*violet\s*:?\s*151\b",
         r"\bscarlet\s+violet\s*:?\s*151\b",
-        r"\bs\s*&\s*v\s*:?[\s\-]*151\b",
-        r"\bs&v\s*:?[\s\-]*151\b",
+        r"\bs\s*&\s*v\s*:?[\s\-_]*151\b",
+        r"\bs&v\s*:?[\s\-_]*151\b",
         r"\bs\/v\s*151\b",
     ]),
 ]
@@ -139,7 +143,7 @@ def detect_theme(title: str, ptype: str) -> Optional[str]:
     if not cand:
         return None
 
-    tokens = [x for x in re.split(r"\s+", cand.strip()) if x]
+    tokens = [tok for tok in re.split(r"[\s\-\/]+", cand.strip()) if tok]
     for tok in tokens:
         if tok.isdigit():
             continue

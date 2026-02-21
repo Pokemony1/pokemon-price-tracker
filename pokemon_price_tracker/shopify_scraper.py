@@ -35,9 +35,12 @@ def looks_like_single_card(title_or_text: str) -> bool:
 
 
 # 151-queries vi betragter som “sikker 151”
+# VIGTIGT: vi inkluderer IKKE den brede "151" marker, da den matcher tonsvis af ikke-Pokémon produkter.
 _151_QUERY_MARKERS = {
-    "151",
     "pokemon 151",
+    "pokémon 151",
+    "pokemon151",
+    "pokémon151",
     "sv 151",
     "sv: 151",
     "sv-151",
@@ -67,19 +70,28 @@ def _series_hint_from_matches(full_text_lower: str, matched_queries: list[str]) 
         return "Mega Evolution - Perfect Order"
 
     # Mega Evolution generic
-    if ("mega evolution" in t) or ("mega evolutions" in t) or ("mega evolution" in mq) or ("mega evolutions" in mq):
+    if (
+        ("mega evolution" in t)
+        or ("mega evolutions" in t)
+        or ("mega evolution" in mq)
+        or ("mega evolutions" in mq)
+    ):
         return "Mega Evolution"
 
-    # SV151 (åbent)
+    # SV151 (strammere)
+    # Kun hvis en "sikker" 151-query faktisk matchede.
     if mq.intersection(_151_QUERY_MARKERS):
-        return "Scarlet & Violet 151"
-    if re.search(r"\b151\b", t):
         return "Scarlet & Violet 151"
 
     # Crown Zenith / Prismatic
     if "crown zenith" in t or "crown zenith" in mq:
         return "Crown Zenith"
-    if ("prismatic evolution" in t) or ("prismatic evolutions" in t) or ("prismatic evolution" in mq) or ("prismatic evolutions" in mq):
+    if (
+        ("prismatic evolution" in t)
+        or ("prismatic evolutions" in t)
+        or ("prismatic evolution" in mq)
+        or ("prismatic evolutions" in mq)
+    ):
         return "Prismatic Evolutions"
 
     return "Unknown Series"
@@ -181,7 +193,7 @@ def scan_shopify_store_json(domain: str, queries: list[str]) -> list[dict]:
                         "series_hint": series_hint,
                         "grouping_text": full_text,
                         "matched_queries": matched,
-                        "url": variant_url,  # ✅ NYT: direkte link
+                        "url": variant_url,  # ✅ direkte link
                     }
                 )
 
