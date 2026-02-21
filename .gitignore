@@ -13,3 +13,11 @@ service_account.json
 # --- ChatGPT export bundle (må ikke i repo) ---
 /CHATGPT_BUNDLE_*.txt
 CHATGPT_BUNDLE_*.txt
+# local test outputs
+*.log
+*_report.json
+*_products.json
+*_products.csv
+b_list_*.*
+test4*.*
+test_*.py
