@@ -112,9 +112,9 @@ def scan_woocommerce_store_api(domain: str, queries: list[str]) -> list[dict]:
                     if not any(word in title_l for word in required_product_words):
                         continue
 
-                    prices_obj = p.get("prices") or {}
-                    price = _wc_price_to_float(prices_obj)
-                    if price is None:
+                    price = _wc_price_to_float(p.get("prices") or {})
+                    if price is None or price <= 0:
+                    
                         continue
 
                     series_hint = _series_hint_from_matches(full_text_l, matched)

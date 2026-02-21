@@ -1,3 +1,4 @@
+# pokemon_price_tracker/product_grouping.py
 import re
 from typing import Optional, Tuple
 
@@ -26,12 +27,12 @@ SERIES_PATTERNS = [
         r"\bpokemon\s*151\b",
         r"\bsv\s*:?[\s\-]*151\b",
         r"\bsv151\b",
-        r"\bs\s*&\s*v\s*:?[\s\-]*151\b",
-        r"\bs&v\s*:?[\s\-]*151\b",
-        r"\bs\/v\s*151\b",
         r"\bscarlet\s*&\s*violet\s*:?\s*151\b",
         r"\bscarlet\s*and\s*violet\s*:?\s*151\b",
         r"\bscarlet\s+violet\s*:?\s*151\b",
+        r"\bs\s*&\s*v\s*:?[\s\-]*151\b",
+        r"\bs&v\s*:?[\s\-]*151\b",
+        r"\bs\/v\s*151\b",
     ]),
 ]
 
@@ -108,6 +109,9 @@ THEME_STOPWORDS = {
     "pokemon", "center", "plus", "elite", "trainer", "box", "etb",
     "english", "sealed", "preorder", "pre-order", "pre", "order",
     "edition", "limited", "new", "promo",
+    # Fix for “ETB - For...” and “ETB - Mega...”
+    "for", "forudbestil", "forudbestilling", "forudbestilles",
+    "mega", "evolution",
 }
 
 
