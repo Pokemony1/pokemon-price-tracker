@@ -8,7 +8,6 @@ from pokemon_price_tracker.queries import QUERIES
 from pokemon_price_tracker.shopify_scraper import looks_like_single_card
 
 SHOP_NAME = "epicpanda"
-
 BASE_URL = "https://epicpanda.dk"
 
 HEADERS = {
@@ -137,7 +136,6 @@ def _parse_price(text: str):
     m = PRICE_RE.search(text or "")
     if not m:
         return None
-
     raw = m.group(1).replace(".", "").replace(",", ".")
     try:
         return float(raw)
@@ -145,100 +143,24 @@ def _parse_price(text: str):
         return None
 
 
-def _extract_product_urls(category_html: str) -> list[str]:
-    urls = []
-    seen = set()
+def _clean_product_url(href: str) -> str:
+    href = html_lib.unescape((href or "").strip())
 
-    for match in re.finditer(
-        r'''href=["']([^"']*?/shop/[^"']+?p\.html(?:\?[^"']*)?)["']''',
-        category_html or "",
-        re.IGNORECASE,
-    ):
-        href = html_lib.unescape((match.group(1) or "").strip())
-        full_url = urljoin(BASE_URL, href)
+    # fix skjulte mellemrum / nbsp i URLs (fx Magneton-linket)
+    href = href.replace("\xa0", "")
+    href = href.replace("%C2%A0", "")
+    href = href.replace("%c2%a0", "")
+    href = href.replace(" -", "-")
+    href = href.replace("- ", "-")
+    href = href.replace(" ", "-")
 
-        if not re.search(r"/shop/.+p\.html(?:\?.*)?$", full_url, re.IGNORECASE):
-            continue
+    full_url = urljoin(BASE_URL, href)
 
-        if full_url in seen:
-            continue
+    # ekstra cleanup hvis encoded nbsp stadig er i den fulde URL
+    full_url = full_url.replace("%C2%A0", "")
+    full_url = full_url.replace("%c2%a0", "")
 
-        seen.add(full_url)
-        urls.append(full_url)
-
-    return urls
-
-
-def _extract_title(product_html: str) -> str:
-    # og:title er ofte mest stabil
-    m = re.search(
-        r'''<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["']''',
-        product_html or "",
-        re.IGNORECASE,
-    )
-    if m:
-        title = html_lib.unescape(m.group(1)).strip()
-        if title:
-            return title
-
-    # fallback: <h1>
-    m = re.search(r"(?is)<h1\b[^>]*>(.*?)</h1>", product_html or "")
-    if m:
-        title = _strip_tags(m.group(1))
-        if title:
-            return title
-
-    # fallback: <title>
-    m = re.search(r"(?is)<title\b[^>]*>(.*?)</title>", product_html or "")
-    if m:
-        title = _strip_tags(m.group(1))
-        if title:
-            return title
-
-    return ""
-
-
-def _extract_price(product_html: str):
-    # prøv først at finde pris tæt på ordet "Pris"
-    m = re.search(
-        r"(?is)pris.{0,200}?(\d{1,3}(?:\.\d{3})*,\d{2})\s*DKK",
-        product_html or "",
-    )
-    if m:
-        try:
-            return float(m.group(1).replace(".", "").replace(",", "."))
-        except Exception:
-            pass
-
-    # fallback: første pris på siden
-    text = _strip_tags(product_html)
-    return _parse_price(text)
-
-
-def _extract_available(product_html: str) -> bool:
-    t = _normalize(_strip_tags(product_html))
-
-    sold_out_markers = [
-        "udsolgt",
-        "ikke på lager",
-        "not available",
-        "sold out",
-        "ikke tilgængelig",
-    ]
-    in_stock_markers = [
-        "på lager",
-        "in stock",
-        "lagerstatus på lager",
-    ]
-
-    if any(marker in t for marker in sold_out_markers):
-        return False
-
-    if any(marker in t for marker in in_stock_markers):
-        return True
-
-    # Hvis markup ændrer sig, så mister vi ikke produktet
-    return True
+    return full_url
 
 
 def _is_valid_title(title: str) -> bool:
@@ -267,6 +189,70 @@ def _matched_queries_for_page(page_markers: set[str], queries: list[str]) -> lis
     return sorted(qset.intersection({x.lower() for x in page_markers}))
 
 
+def _extract_products_from_category_html(category_html: str, series_hint: str, matched_queries: list[str]) -> list[dict]:
+    products = []
+    seen_urls = set()
+
+    # Find kun rigtige produktlinks i /shop/...p.html
+    matches = list(
+        re.finditer(
+            r'''<a\b[^>]*href=["']([^"']*?/shop/[^"']+?p\.html(?:\?[^"']*)?)["'][^>]*>(.*?)</a>''',
+            category_html or "",
+            re.IGNORECASE | re.DOTALL,
+        )
+    )
+
+    for i, match in enumerate(matches):
+        href = match.group(1)
+        inner_html = match.group(2)
+
+        title = _strip_tags(inner_html)
+        if not title:
+            continue
+
+        if not _is_valid_title(title):
+            continue
+
+        product_url = _clean_product_url(href)
+        if not product_url or product_url in seen_urls:
+            continue
+
+        next_start = matches[i + 1].start() if i + 1 < len(matches) else len(category_html)
+        snippet = category_html[match.end():next_start]
+
+        # kig kun lidt frem, så vi holder os til det relevante produktområde
+        snippet = snippet[:1500]
+        snippet_text = _strip_tags(snippet)
+        snippet_norm = _normalize(snippet_text)
+
+        price = _parse_price(snippet_text)
+        if price is None or price <= 0:
+            continue
+
+        available = True
+        if "udsolgt" in snippet_norm or "ikke på lager" in snippet_norm or "sold out" in snippet_norm:
+            available = False
+        elif "på lager" in snippet_norm or "in stock" in snippet_norm:
+            available = True
+
+        products.append(
+            {
+                "name": title.strip(),
+                "price": float(price),
+                "available": bool(available),
+                "series_hint": series_hint,
+                "grouping_text": title.strip(),
+                "matched_queries": matched_queries,
+                "url": product_url,
+                "shop_source": "epicpanda",
+            }
+        )
+
+        seen_urls.add(product_url)
+
+    return products
+
+
 def get_products():
     all_products = []
     session = requests.Session()
@@ -290,49 +276,14 @@ def get_products():
             print(f"Fejl ved hentning af kategori {category_url}: {e}")
             continue
 
-        product_urls = _extract_product_urls(category_html)
-        print(f"epicpanda: fandt {len(product_urls)} produktlinks i {series_hint}")
+        products = _extract_products_from_category_html(
+            category_html=category_html,
+            series_hint=series_hint,
+            matched_queries=matched_queries,
+        )
 
-        seen_urls = set()
-
-        for product_url in product_urls:
-            if product_url in seen_urls:
-                continue
-            seen_urls.add(product_url)
-
-            try:
-                resp = session.get(product_url, timeout=30)
-                resp.raise_for_status()
-                product_html = resp.text
-            except Exception as e:
-                print(f"Fejl ved hentning af produkt {product_url}: {e}")
-                continue
-
-            title = _extract_title(product_html)
-            if not title:
-                continue
-
-            if not _is_valid_title(title):
-                continue
-
-            price = _extract_price(product_html)
-            if price is None or price <= 0:
-                continue
-
-            available = _extract_available(product_html)
-
-            all_products.append(
-                {
-                    "name": title.strip(),
-                    "price": float(price),
-                    "available": bool(available),
-                    "series_hint": series_hint,
-                    "grouping_text": title.strip(),
-                    "matched_queries": matched_queries,
-                    "url": product_url,
-                    "shop_source": "epicpanda",
-                }
-            )
+        print(f"epicpanda: fandt {len(products)} produkter i {series_hint}")
+        all_products.extend(products)
 
     print(f"epicpanda: hentede {len(all_products)} produkter i alt")
     return all_products
