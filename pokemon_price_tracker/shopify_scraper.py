@@ -3,6 +3,7 @@ import requests
 from pokemon_price_tracker.product_grouping import detect_series
 
 
+
 # -------- Singles (kort) indikatorer --------
 RARITY_WORDS = [
     "common", "uncommon", "rare", "double rare",
