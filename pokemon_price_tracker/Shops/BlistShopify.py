@@ -7,6 +7,7 @@ B_LIST_SHOPIFY = [
     ("fun_shop", "fun-shop.dk"),
     ("musenogslottet", "musenogslottet.dk"),
     ("rogerz", "rogerz.dk"),
+    ("epicpanda", "epicpanda.dk",),
 ]
 
 
