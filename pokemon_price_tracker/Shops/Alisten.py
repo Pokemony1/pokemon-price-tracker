@@ -8,7 +8,7 @@ A_LIST = [
     ("spilforsyningen", "spilforsyningen.dk"),
     ("matraws", "matraws.dk"),
     ("symbizon", "symbizon.dk"),
-    ("shop_adlr", "shop.adlr.dk"),
+    ("shop_adlr", "shop.adlr.dk", "epicpanda.dk",),
 ]
 
 
