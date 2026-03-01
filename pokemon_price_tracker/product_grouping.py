@@ -23,8 +23,6 @@ SERIES_PATTERNS = [
     ("Crown Zenith", [r"\bcrown zenith\b"]),
     ("Prismatic Evolutions", [r"\bprismatic evolution(s)?\b"]),
 
-    # Scarlet & Violet 151
-    # VIGTIGT: Vi matcher IKKE bare "151" alene, ellers ryger alt med tallet 151 med.
     ("Scarlet & Violet 151", [
         r"\b(pokemon|pok[eé]mon)\b.*\b151\b",
         r"\b151\b.*\b(pokemon|pok[eé]mon)\b",
@@ -113,16 +111,22 @@ THEME_STOPWORDS = {
     "pokemon", "center", "plus", "elite", "trainer", "box", "etb",
     "english", "sealed", "preorder", "pre-order", "pre", "order",
     "edition", "limited", "new", "promo",
-    # Fix for “ETB - For...” and “ETB - Mega...”
     "for", "forudbestil", "forudbestilling", "forudbestilles",
     "mega", "evolution",
+
+    # nye stopwords for at undgå falske ETB-temaer
+    "case", "kort", "card", "cards",
+    "scarlet", "violet",
+    "prismatic", "evolutions", "evolution",
+    "pokemonkort", "tcg",
+    "inkl", "inklusive", "with",
 }
 
 
 def detect_theme(title: str, ptype: str) -> Optional[str]:
     """
-    Prøver at udtrække 'tema' fra ETB-titler.
-    Fx: "... ETB Glaceon" / "... Elite Trainer Box - Bulbasaur" / "... ETB (Glaceon)"
+    Udtræk kun tema for ETB'er når det ligner et rigtigt karakter/variant-navn.
+    Vi vil IKKE bruge generiske ord som 'Case', 'Kort', 'Scarlet' osv.
     """
     if "ETB" not in (ptype or "") and "Elite Trainer Box" not in (ptype or ""):
         return None
@@ -143,6 +147,20 @@ def detect_theme(title: str, ptype: str) -> Optional[str]:
     if not cand:
         return None
 
+    # Hvis halen tydeligt bare beskriver retail-format, så intet tema
+    retail_noise_patterns = [
+        r"\bcase\b",
+        r"\bkort\b",
+        r"\bcard(s)?\b",
+        r"\b10x\b",
+        r"\bscarlet\b",
+        r"\bviolet\b",
+        r"\bprismatic\b",
+        r"\bevolution(s)?\b",
+    ]
+    if any(re.search(p, cand) for p in retail_noise_patterns):
+        return None
+
     tokens = [tok for tok in re.split(r"[\s\-\/]+", cand.strip()) if tok]
     for tok in tokens:
         if tok.isdigit():
@@ -151,6 +169,11 @@ def detect_theme(title: str, ptype: str) -> Optional[str]:
             continue
         if len(tok) < 3:
             continue
+
+        # undgå rene model/seriekoder
+        if re.fullmatch(r"[a-z]{1,3}\d{1,3}", tok):
+            continue
+
         return tok.replace("-", " ").title()
 
     return None
@@ -178,7 +201,6 @@ def build_group_key_and_name(
     if theme:
         canonical += f" - {theme}"
 
-    # Key: series + type + count + theme (så themes ikke blandes)
     key_parts = [
         _clean(series),
         _clean(ptype),
