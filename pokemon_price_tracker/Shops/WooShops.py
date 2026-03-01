@@ -1,6 +1,5 @@
 from pokemon_price_tracker.woocommerce_scraper import scan_woocommerce_store_api
 from pokemon_price_tracker.queries import QUERIES
-from pokemon_price_tracker.Shops.Epicpanda import scan_epicpanda_store
 
 SHOP_NAME = "Woo shops"
 
